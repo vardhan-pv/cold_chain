@@ -28,6 +28,14 @@ class Service:
             for w in DEMO_WAREHOUSES:
                 if not s.get(Warehouse,w['warehouse_id']):
                     s.add(Warehouse(**w))
+            hw_id = "CCU-HW-001"
+            hw_dev = s.get(Device, hw_id)
+            hw_token = "BUH0bDTcPJGQ0VFS4P1IAfqlyOL02rABodlMFBUueVY"
+            if not hw_dev:
+                s.add(Device(device_id=hw_id, name="ESP32-S3 Physical Node", mode="HARDWARE",
+                             token_hash=digest(hw_token), controller={}, retired_boots=[]))
+            elif not hw_dev.token_hash or hw_dev.token_hash != digest(hw_token):
+                hw_dev.token_hash = digest(hw_token)
 
     def register(self, data: DeviceRegistration):
         token=secrets.token_urlsafe(32)
