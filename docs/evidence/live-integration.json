@@ -1,0 +1,188 @@
+{
+  "status": "PASS",
+  "transport": "REAL_LOCAL_HTTP",
+  "total_samples": 960,
+  "archive_sources": 3,
+  "hardware_verified": false,
+  "scenarios": [
+    {
+      "scenario": "normal",
+      "samples": 80,
+      "states": [
+        "NORMAL"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 2,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 2,
+      "rerouting_incidents": 0,
+      "rerouting_status": null
+    },
+    {
+      "scenario": "primary_failure",
+      "samples": 80,
+      "states": [
+        "BACKUP_ACTIVE",
+        "NORMAL",
+        "PRIMARY_FAULT",
+        "RECOVERY",
+        "WARNING"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 4,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 4,
+      "rerouting_incidents": 0,
+      "rerouting_status": null
+    },
+    {
+      "scenario": "temperature_rise",
+      "samples": 80,
+      "states": [
+        "BACKUP_ACTIVE",
+        "CRITICAL_FAILURE",
+        "NORMAL",
+        "PRIMARY_FAULT",
+        "REROUTING",
+        "WARNING"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 4,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 4,
+      "rerouting_incidents": 1,
+      "rerouting_status": "SELECTED"
+    },
+    {
+      "scenario": "overcurrent",
+      "samples": 80,
+      "states": [
+        "CRITICAL_FAILURE",
+        "NORMAL",
+        "REROUTING"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 2,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 2,
+      "rerouting_incidents": 1,
+      "rerouting_status": "SELECTED"
+    },
+    {
+      "scenario": "overheat",
+      "samples": 80,
+      "states": [
+        "CRITICAL_FAILURE",
+        "REROUTING"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 1,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 1,
+      "rerouting_incidents": 1,
+      "rerouting_status": "SELECTED"
+    },
+    {
+      "scenario": "door_open",
+      "samples": 80,
+      "states": [
+        "NORMAL",
+        "WARNING"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 1,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 1,
+      "rerouting_incidents": 0,
+      "rerouting_status": null
+    },
+    {
+      "scenario": "sensor_failure",
+      "samples": 80,
+      "states": [
+        "CRITICAL_FAILURE",
+        "REROUTING"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 1,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 1,
+      "rerouting_incidents": 1,
+      "rerouting_status": "SELECTED"
+    },
+    {
+      "scenario": "wifi_failure",
+      "samples": 80,
+      "states": [
+        "NORMAL"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 2,
+      "buffered_and_recovered": 20,
+      "confirmed_commands": 2,
+      "rerouting_incidents": 0,
+      "rerouting_status": null
+    },
+    {
+      "scenario": "backend_failure",
+      "samples": 80,
+      "states": [
+        "NORMAL"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 2,
+      "buffered_and_recovered": 20,
+      "confirmed_commands": 2,
+      "rerouting_incidents": 0,
+      "rerouting_status": null
+    },
+    {
+      "scenario": "backup_failure",
+      "samples": 80,
+      "states": [
+        "BACKUP_ACTIVE",
+        "CRITICAL_FAILURE",
+        "NORMAL",
+        "PRIMARY_FAULT",
+        "REROUTING",
+        "WARNING"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 4,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 4,
+      "rerouting_incidents": 1,
+      "rerouting_status": "SELECTED"
+    },
+    {
+      "scenario": "gps_unavailable",
+      "samples": 80,
+      "states": [
+        "NORMAL"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 2,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 2,
+      "rerouting_incidents": 0,
+      "rerouting_status": null
+    },
+    {
+      "scenario": "recovery",
+      "samples": 80,
+      "states": [
+        "BACKUP_ACTIVE",
+        "NORMAL",
+        "PRIMARY_FAULT",
+        "RECOVERY",
+        "WARNING"
+      ],
+      "status": "PASS",
+      "command_acknowledgements": 4,
+      "buffered_and_recovered": 0,
+      "confirmed_commands": 4,
+      "rerouting_incidents": 0,
+      "rerouting_status": null
+    }
+  ]
+}

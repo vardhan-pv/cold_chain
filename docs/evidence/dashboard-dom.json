@@ -1,0 +1,32 @@
+{
+  "status": "PASS",
+  "environment": "JSDOM against live FastAPI HTTP server",
+  "pages": [
+    "overview",
+    "live",
+    "predictive",
+    "healing",
+    "equipment",
+    "routing",
+    "alerts",
+    "history",
+    "analytics",
+    "health",
+    "validation",
+    "archive"
+  ],
+  "actions": [
+    "authenticated API render",
+    "new simulation",
+    "fault injection",
+    "live fault timeline",
+    "command lifecycle",
+    "pause",
+    "CSV export",
+    "archive pagination",
+    "complete archive export",
+    "complete telemetry export"
+  ],
+  "errors": [],
+  "visual_browser_verification": "PENDING_ENVIRONMENT_ACCESS"
+}

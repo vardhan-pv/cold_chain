@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#102c2b">
+  <title>Cold Chain | Control Room</title>
+  <link rel="icon" href="/assets/icon.svg">
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <!-- Login / Connection Screen -->
+  <div id="login" class="login">
+    <form id="login-form">
+      <img src="/assets/icon.svg" alt="" width="48">
+      <p class="eyebrow">COLD CHAIN / MONITORING & CONTROL</p>
+      <h1>Connect to Cold Chain system</h1>
+      <p>Enter your Operator Token and API Endpoint to access the control room.</p>
+      
+      <label for="api-url">Backend Server URL</label>
+      <input id="api-url" type="url" placeholder="http://127.0.0.1:8000 (or https://your-backend.onrender.com)">
+      
+      <label for="token">Operator Token</label>
+      <input id="token" type="password" required autocomplete="off" placeholder="Enter token">
+      
+      <button type="submit">Open Control Room</button>
+      <p id="login-error" role="alert"></p>
+      <small>Supports <strong>Simulation Mode</strong> (virtual scenarios) &amp; <strong>Live Hardware Mode</strong> (ESP32-S3).</small>
+    </form>
+  </div>
+
+  <!-- Main Application Shell -->
+  <div id="shell" hidden>
+    <aside>
+      <a href="#overview" class="brand">
+        <img src="/assets/icon.svg" alt="" width="34">
+        <span>COLD CHAIN<small>PROTOTYPE CONTROL</small></span>
+      </a>
+      <p class="nav-label">WORKSPACE</p>
+      <nav id="nav" aria-label="Main navigation"></nav>
+      <div class="aside-bottom">
+        <span class="status-dot"></span> Dual-Mode Architecture
+        <p>ESP32-S3 Hardware + Simulator</p>
+        <button id="logout" class="quiet">Disconnect</button>
+      </div>
+    </aside>
+
+    <main>
+      <header>
+        <div class="breadcrumb">Laboratory <span>/</span> <span id="crumb">Overview</span></div>
+        <div class="header-right">
+          <span id="connection" class="badge">NO DATA</span>
+          <button id="refresh" class="quiet">Refresh</button>
+        </div>
+      </header>
+
+      <div id="notice" class="notice" role="status"></div>
+
+      <!-- Mode Switcher Banner -->
+      <section class="mode-bar">
+        <div class="mode-tabs" role="tablist">
+          <button id="mode-sim-tab" class="mode-tab active" type="button"><span class="mode-icon">🎮</span> Simulation Mode <span class="mode-pill">Virtual Sandbox</span></button>
+          <button id="mode-live-tab" class="mode-tab" type="button"><span class="mode-icon">📡</span> Live Hardware Mode <span class="mode-pill warn">ESP32 Real-Time</span></button>
+        </div>
+        <div class="server-info">
+          <span id="server-url-badge" class="badge neutral">Server: Localhost</span>
+        </div>
+      </section>
+
+      <div class="page-heading">
+        <div>
+          <p class="eyebrow" id="mode-eyebrow">SIMULATION ENGINE ACTIVE</p>
+          <h1 id="page-title">System overview</h1>
+          <p id="page-subtitle">Monitor chamber metrics, analyze ML risk, and inspect control responses.</p>
+        </div>
+        <div class="device-selector-wrap">
+          <label class="device-label">Active Unit <select id="device"></select></label>
+          <button id="btn-register-device" class="secondary quiet" style="margin-top:4px;">+ Register ESP32</button>
+        </div>
+      </div>
+
+      <!-- Simulation Control Panel -->
+      <section id="sim-controls" class="simulation-bar" aria-label="Simulation controls">
+        <div>
+          <strong>Scenario Control Unit</strong>
+          <span id="sim-label">5× simulated clock speed</span>
+        </div>
+        <label class="sr-only" for="scenario">Fault scenario</label>
+        <select id="scenario">
+          <option value="normal">Normal operation</option>
+          <option value="primary_failure">Primary cooling failure</option>
+          <option value="temperature_rise">Temperature rise</option>
+          <option value="overcurrent">Excess primary current</option>
+          <option value="overheat">Heatsink overtemperature</option>
+          <option value="door_open">Door left open</option>
+          <option value="sensor_failure">Critical sensor failure</option>
+          <option value="wifi_failure">Wi-Fi loss</option>
+          <option value="backend_failure">Backend link loss</option>
+          <option value="backup_failure">Primary + backup failure</option>
+          <option value="gps_unavailable">GPS unavailable</option>
+          <option value="recovery">Backup recovery</option>
+        </select>
+        <button id="apply" class="secondary">Apply scenario</button>
+        <button id="start">New run</button>
+        <button id="pause" class="secondary">Pause / Resume</button>
+      </section>
+
+      <!-- Live Hardware Panel -->
+      <section id="live-controls" class="simulation-bar live-bar" hidden aria-label="Hardware connection status">
+        <div>
+          <strong>ESP32 Hardware Ingestion Link</strong>
+          <span id="live-label">Waiting for real HTTP telemetry from physical unit...</span>
+        </div>
+        <button id="btn-show-code" class="secondary">View ESP32 Setup Code</button>
+        <button id="btn-register-live" class="secondary">+ Register New Device</button>
+      </section>
+
+      <div id="content" aria-live="polite"></div>
+
+      <footer>
+        Cold Chain Dual-Mode System · <span>Production Ready for Vercel + Render Deployment</span>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Modal for ESP32 Setup Code & Device Registration -->
+  <dialog id="modal-hw" class="modal">
+    <form method="dialog" class="modal-card">
+      <h2>ESP32-S3 Firmware Configuration</h2>
+      <p class="card-sub">Use these settings in your ESP32-S3 C++ code to stream live telemetry to this backend.</p>
+
+      <div class="code-box">
+        <p><strong>Target Endpoint:</strong> <code id="cfg-endpoint">http://.../api/v1/telemetry</code></p>
+        <p><strong>Device ID:</strong> <code id="cfg-device-id">ESP32-UNIT-01</code></p>
+        <p><strong>Header:</strong> <code>X-Device-Token: <span id="cfg-token">YourDeviceToken</span></code></p>
+      </div>
+
+      <p class="card-sub" style="margin-top:12px;">Sample ESP32 C++ snippet:</p>
+      <pre class="code-block" id="cpp-snippet">// ESP32 Telemetry POST
+HTTPClient http;
+http.begin(API_URL);
+http.addHeader("Content-Type", "application/json");
+http.addHeader("X-Device-Token", DEVICE_TOKEN);
+int code = http.POST(jsonPayload);</pre>
+
+      <div class="modal-actions">
+        <button type="button" id="btn-copy-code" class="secondary">Copy Config</button>
+        <button type="submit">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Modal for Registering New Hardware Device -->
+  <dialog id="modal-register" class="modal">
+    <form id="form-register-device" class="modal-card">
+      <h2>Register ESP32 Hardware Device</h2>
+      <p class="card-sub">Create a new live hardware registration token for a physical unit.</p>
+      
+      <label for="reg-device-id">Device ID (e.g. ESP32-UNIT-01)</label>
+      <input id="reg-device-id" type="text" required pattern="^[A-Za-z0-9_-]{1,48}$" placeholder="ESP32-S3-LAB-01">
+      
+      <label for="reg-device-name">Device Name</label>
+      <input id="reg-device-name" type="text" required placeholder="Laboratory Prototype #1">
+      
+      <div id="reg-result" class="notice" hidden></div>
+
+      <div class="modal-actions">
+        <button type="button" id="btn-cancel-reg" class="secondary">Cancel</button>
+        <button type="submit" id="btn-submit-reg">Generate Token</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>

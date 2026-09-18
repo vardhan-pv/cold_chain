@@ -1,0 +1,18 @@
+{
+  "status": "NOT_VERIFIED",
+  "hardware_verified": false,
+  "profile": "esp32-s3-generic-compile-check",
+  "platform": "espressif32@6.10.0",
+  "attempted_at": "2026-09-17",
+  "completed": [
+    "PlatformIO executable installed",
+    "Portable controller compiled and tested on host"
+  ],
+  "blocker": "Platform Manager failed to install espressif32@6.10.0: both official package mirrors timed out during download. Full adapter compilation did not begin.",
+  "mirrors": [
+    "dl.registry.platformio.org",
+    "dl.registry.nm1.platformio.org"
+  ],
+  "integrity": "No dependency verification bypassed. No target binary is claimed or shipped.",
+  "next_command": "python -m platformio run --project-dir firmware"
+}

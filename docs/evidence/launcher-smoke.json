@@ -1,0 +1,12 @@
+{
+  "status": "PASS",
+  "scope": "Linux launch and CLI in isolated delivery copy",
+  "launcher": "run.py",
+  "legacy_entry_point": "simulator/simulator.py",
+  "scenario_alias": "primary_fault -> primary_failure",
+  "readings": 3,
+  "registration": "Operator credential exchanged for scoped simulator token",
+  "archive_sources": 3,
+  "model_inference": "READY",
+  "windows_execution": "NOT_TESTED"
+}

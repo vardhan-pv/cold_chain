@@ -1,0 +1,22 @@
+{
+  "status": "PASS",
+  "scope": "HOST_COMPILED_CONTROLLER_ONLY",
+  "samples_compared": 2400,
+  "scenarios": [
+    "normal",
+    "primary_failure",
+    "temperature_rise",
+    "overcurrent",
+    "overheat",
+    "door_open",
+    "sensor_failure",
+    "wifi_failure",
+    "backend_failure",
+    "backup_failure",
+    "gps_unavailable",
+    "recovery"
+  ],
+  "ml_advisory_variants": 2,
+  "target_build": "NOT_ASSERTED",
+  "hardware_verified": false
+}

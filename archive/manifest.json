@@ -1,0 +1,24 @@
+{
+  "cold_chain.db": {
+    "sha256": "aea2849ab96abf1014a61ba51dcf67cd413a83e6349b8185367e111846977f4c",
+    "tables": {
+      "telemetry": 103,
+      "fault_events": 6,
+      "system_state": 1,
+      "control_commands": 2,
+      "rerouting_events": 1
+    }
+  },
+  "cold_chain_old.db": {
+    "sha256": "432283bf8fd395ec51a609371fd65840e5fad79caa8437cae19e200d04fa4a2d",
+    "tables": {
+      "telemetry": 16
+    }
+  },
+  "cold_chain_pre_fault_schema.db": {
+    "sha256": "85d64a4c4f8820d6574cb4cf8c9d8d907b486988a3b9883f888bde62e1d1d5fd",
+    "tables": {
+      "telemetry": 59
+    }
+  }
+}

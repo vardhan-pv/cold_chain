@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.pio/
+runtime/
+*.db
+*.db-shm
+*.db-wal
+firmware/esp32_s3/secrets.h
+firmware/esp32_s3/commissioning.h
+dashboard/dist/
+.env

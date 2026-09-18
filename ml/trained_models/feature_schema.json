@@ -1,0 +1,20 @@
+{
+  "version": "peltier-v1",
+  "features": [
+    "chamber_temp_c",
+    "heatsink_temp_c",
+    "sht31_temp_c",
+    "humidity_pct",
+    "primary_current_a",
+    "door_open",
+    "primary_cooling",
+    "backup_cooling",
+    "thermal_delta_c",
+    "chamber_rate_c_min",
+    "current_mean_a",
+    "temperature_std_c",
+    "door_open_s",
+    "current_ratio",
+    "temperature_mean_c"
+  ]
+}

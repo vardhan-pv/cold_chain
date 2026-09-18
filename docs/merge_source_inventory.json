@@ -1,0 +1,34 @@
+[
+  {
+    "uploaded_name": "Cold_Chain_Final_Prototype_Component_List_FIXED(2).pdf",
+    "packaged_path": "docs/sources/Final_Hardware_Components_List.pdf",
+    "sha256": "0078f5b7a58f1b62f783721bb92de5fa82f6c76afa5a21397f95b26f3519525e",
+    "review": "READ_COMPLETELY_BEFORE_IMPLEMENTATION"
+  },
+  {
+    "uploaded_name": "Cold_Chain_Complete_Final_Project_Report(2).docx",
+    "packaged_path": "docs/sources/Complete_Project_Report.docx",
+    "sha256": "77255ff91388aa3bd608ec606eeff7b1aa96f45fa3265d1337b83e70e4ff5a49",
+    "review": "READ_COMPLETELY_BEFORE_IMPLEMENTATION"
+  },
+  {
+    "uploaded_name": "Cold_Chain_Report_Final (1)(1).pdf",
+    "packaged_path": "docs/sources/Phase_I_Proposal.pdf",
+    "sha256": "cb1b84acb4110e743632793ab06da01525a052c257c47eae0a8a3f6b204d2709",
+    "review": "READ_COMPLETELY_BEFORE_IMPLEMENTATION"
+  },
+  {
+    "uploaded_name": "softwarepart.docx",
+    "packaged_path": "docs/sources/Software_Progress_Before_Merge.docx",
+    "sha256": "33409d147628c54587cdd424ae34534b3801d816f5cbd35d52276fffe6d91cfb",
+    "review": "READ_COMPLETELY_BEFORE_IMPLEMENTATION"
+  },
+  {
+    "uploaded_name": "cold_chain_project.zip",
+    "sha256": "65f558f810a9ab9d2dc86c823e96922aebdacdea6132977653b6883deb086a66",
+    "review": "ACTIVE_SOURCE_AND_DATABASES_INSPECTED",
+    "preserved_source": "archive/uploaded_source",
+    "preserved_databases": "archive/databases",
+    "excluded": "Bundled virtual environment and bytecode"
+  }
+]
