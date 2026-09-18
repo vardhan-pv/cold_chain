@@ -1,5 +1,6 @@
 // Hardware adapter is intentionally uncommissioned until the purchased board and interfaces are checked.
 #include "config.h"
+#include <esp_system.h>
 #include "sensors.h"
 #include "cooling.h"
 #include "network.h"
@@ -14,19 +15,39 @@ static bool savedLatch=false,injectPrimary=false,injectBackup=false;
 static String command;
 
 void setup(){
-  coolingBegin(); // Always set inactive levels before starting sensors/network.
   Serial.begin(115200);
+  delay(100);
+  Serial.printf("\n[BOOT] reset_reason=%d\n", (int)esp_reset_reason());
+  Serial.println("[BOOT] 1 cooling start");
+  coolingBegin(); // Always set inactive levels before starting sensors/network.
+  Serial.println("[BOOT] 1 cooling OK");
+  Serial.println("[BOOT] 2 prefs start");
   prefs.begin("coldchain",false);savedLatch=prefs.getBool("fault",false);if(savedLatch)controller.latch();
-  sensorsBegin();displayBegin();networkBegin();
+  Serial.println("[BOOT] 2 prefs OK");
+  Serial.println("[BOOT] 3 sensors start");
+  sensorsBegin();
+  Serial.println("[BOOT] 3 sensors OK");
+  Serial.println("[BOOT] 4 display start");
+  displayBegin();
+  Serial.println("[BOOT] 4 display OK");
+  Serial.println("[BOOT] 5 fault_buttons start");
   if(OPTIONAL_FAULT_BUTTONS){if(PIN_INJECT_PRIMARY>=0)pinMode(PIN_INJECT_PRIMARY,INPUT_PULLUP);if(PIN_INJECT_BACKUP>=0)pinMode(PIN_INJECT_BACKUP,INPUT_PULLUP);}
+  Serial.println("[BOOT] 5 fault_buttons OK");
+  Serial.printf("[BOOT] free_heap=%lu\n", (unsigned long)ESP.getFreeHeap());
+  Serial.println("[BOOT] 6 network start");
+  networkBegin();
+  Serial.println("[BOOT] 6 network OK");
+  Serial.println("[BOOT] 7 watchdog start");
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
-  esp_task_wdt_config_t config={.timeout_ms=5000,.idle_core_mask=0,.trigger_panic=true};
+  esp_task_wdt_config_t config={.timeout_ms=8000,.idle_core_mask=0,.trigger_panic=true};
   esp_task_wdt_reconfigure(&config);
 #else
-  esp_task_wdt_init(5,true);
+  esp_task_wdt_init(8,true);
 #endif
   esp_task_wdt_add(nullptr);
+  Serial.println("[BOOT] 7 watchdog OK");
   Serial.printf("{\"event\":\"boot\",\"hardware_verified\":false,\"commissioned\":%s}\n",coolingConfigured()?"true":"false");
+  Serial.println("[BOOT] setup() COMPLETE");
 }
 void loop(){
   const uint32_t now=millis();sensorsTick(now);SensorData s=sensorSnapshot(now);

@@ -75,11 +75,15 @@ static void syncNTP() {
 }
 
 static void worker(void*){
+  Serial.println("[BOOT] 8 network_task started");
+  Serial.printf("[BOOT] 8 task_stack_hwm=%lu\n", (unsigned long)uxTaskGetStackHighWaterMark(nullptr));
   WiFi.mode(WIFI_STA);
-  if(strlen(WIFI_SSID))WiFi.begin(WIFI_SSID,WIFI_PASSWORD);
+  Serial.println("[BOOT] 8 WiFi.mode OK");
+  if(strlen(WIFI_SSID)){WiFi.begin(WIFI_SSID,WIFI_PASSWORD);Serial.println("[BOOT] 8 WiFi.begin OK");}
   uint32_t reconnectAt=0,retryMs=1000,lastNtpRetry=0;
   bool wasConnected=false;
   Packet packet;bool holding=false;
+  Serial.printf("[BOOT] 8 task_stack_hwm_after_packet=%lu\n", (unsigned long)uxTaskGetStackHighWaterMark(nullptr));
   for(;;){
     if(WiFi.status()!=WL_CONNECTED){
       wasConnected=false;
@@ -140,7 +144,7 @@ static void worker(void*){
 void networkBegin(){
   snprintf(bootID,sizeof(bootID),"%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random());
   queue=xQueueCreate(24,sizeof(Packet));
-  if(queue)xTaskCreatePinnedToCore(worker,"telemetry",8192,nullptr,1,nullptr,0);
+  if(queue)xTaskCreatePinnedToCore(worker,"telemetry",16384,nullptr,1,nullptr,0);
 }
 void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,const char* injection){
   if(!queue)return;
