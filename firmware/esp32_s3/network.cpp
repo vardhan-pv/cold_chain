@@ -56,16 +56,49 @@ static void acknowledgeLocalDecision(){
   }
   http.end();
 }
+static std::atomic<bool> clockSynchronized{false};
+
+static void syncNTP() {
+  Serial.println("[NTP] Starting synchronization...");
+  configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+  for (int attempt = 1; attempt <= 30; attempt++) {
+    time_t now = time(nullptr);
+    Serial.printf("[NTP] Attempt %d epoch=%ld\n", attempt, (long)now);
+    if (now > 1700000000) {
+      clockSynchronized = true;
+      Serial.println("[NTP] CLOCK SYNCHRONIZED");
+      return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+  Serial.println("[NTP] Synchronization failed");
+}
+
 static void worker(void*){
   WiFi.mode(WIFI_STA);
   if(strlen(WIFI_SSID))WiFi.begin(WIFI_SSID,WIFI_PASSWORD);
-  configTime(0,0,"pool.ntp.org","time.nist.gov");
-  uint32_t reconnectAt=0,retryMs=1000;
+  uint32_t reconnectAt=0,retryMs=1000,lastNtpRetry=0;
+  bool wasConnected=false;
   Packet packet;bool holding=false;
   for(;;){
     if(WiFi.status()!=WL_CONNECTED){
+      wasConnected=false;
       if(millis()-reconnectAt>=10000){reconnectAt=millis();if(strlen(WIFI_SSID))WiFi.reconnect();}
       vTaskDelay(pdMS_TO_TICKS(100));continue;
+    }
+    if(!wasConnected){
+      wasConnected=true;
+      Serial.println("[WiFi] Connected");
+      Serial.printf("[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
+      syncNTP();
+      lastNtpRetry=millis();
+    } else if(!clockSynchronized && (millis()-lastNtpRetry>=30000)){
+      lastNtpRetry=millis();
+      syncNTP();
+    }
+    if(!clockSynchronized){
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
     }
     if(!holding)holding=xQueueReceive(queue,&packet,pdMS_TO_TICKS(100))==pdTRUE;
     if(!holding)continue;
@@ -80,7 +113,7 @@ static void worker(void*){
     }
     int status=-1;
     if(configured&&strlen(DEVICE_TOKEN)){
-      http.setConnectTimeout(1500);http.setTimeout(1500);
+      http.setConnectTimeout(2500);http.setTimeout(2500);
       http.addHeader("Content-Type","application/json");http.addHeader("X-Device-Token",DEVICE_TOKEN);
       status=http.POST(reinterpret_cast<uint8_t*>(packet.json),strlen(packet.json));
       if(status>=200&&status<300){
@@ -112,7 +145,7 @@ void networkBegin(){
 void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,const char* injection){
   if(!queue)return;
   time_t nowTime=time(nullptr);
-  if(nowTime<1704067200){Serial.println("{\"event\":\"clock_unsynchronized\",\"telemetry\":\"not_sent\"}");return;}
+  if(nowTime<=1700000000){return;}
   struct tm utcTime;gmtime_r(&nowTime,&utcTime);char timestamp[32];strftime(timestamp,sizeof(timestamp),"%Y-%m-%dT%H:%M:%SZ",&utcTime);
   JsonDocument j;j["schema_version"]="1.0";j["device_id"]=DEVICE_ID;j["boot_id"]=bootID;j["sequence"]=(uint32_t)(++sequence);
   j["timestamp"]=timestamp;j["uptime_ms"]=now;j["mode"]="HARDWARE";
