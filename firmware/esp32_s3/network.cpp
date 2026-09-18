@@ -42,7 +42,7 @@ static void acknowledgeLocalDecision(){
   bool primary=primaryObserved(),backup=backupObserved();
   bool matches=command["based_on_sequence"].as<uint32_t>()<=sequence&&
       command["primary_cooling"].as<bool>()==primary&&command["backup_cooling"].as<bool>()==backup;
-  JsonDocument ack;ack["device_id"]=DEVICE_ID;ack["boot_id"]=bootID;ack["sequence"]=sequence;
+  JsonDocument ack;ack["device_id"]=DEVICE_ID;ack["boot_id"]=bootID;ack["sequence"]=(uint32_t)sequence.load();
   ack["outcome"]=matches?"APPLIED":"REJECTED";ack["primary_cooling"]=primary;ack["backup_cooling"]=backup;
   ack["reason"]=matches?"Local safety loop agrees; GPIO command state reported":"Local safety loop disagrees; remote override inhibited";
   String body;serializeJson(ack,body);
@@ -106,7 +106,7 @@ void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,
   time_t nowTime=time(nullptr);
   if(nowTime<1704067200){Serial.println("{\"event\":\"clock_unsynchronized\",\"telemetry\":\"not_sent\"}");return;}
   struct tm utcTime;gmtime_r(&nowTime,&utcTime);char timestamp[32];strftime(timestamp,sizeof(timestamp),"%Y-%m-%dT%H:%M:%SZ",&utcTime);
-  JsonDocument j;j["schema_version"]="1.0";j["device_id"]=DEVICE_ID;j["boot_id"]=bootID;j["sequence"]=++sequence;
+  JsonDocument j;j["schema_version"]="1.0";j["device_id"]=DEVICE_ID;j["boot_id"]=bootID;j["sequence"]=(uint32_t)(++sequence);
   j["timestamp"]=timestamp;j["uptime_ms"]=now;j["mode"]="HARDWARE";
   auto number=[&](const char* key,float value,bool valid){if(valid&&isfinite(value))j[key]=value;else j[key]=nullptr;};
   number("chamber_temp_c",s.chamber,s.chamberOK);number("heatsink_temp_c",s.heatsink,s.heatsinkOK);
