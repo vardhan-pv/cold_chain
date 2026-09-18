@@ -42,13 +42,15 @@ class Controller:
         self.cooled_once = False
         self.observed_primary_last = False
         self.off_transition_at = None
+        self.commissioned_sensors = list(snapshot.get('commissioned_sensors', [])) if snapshot else []
         if snapshot:
             for key in self.snapshot():
                 if key in snapshot:
                     setattr(self, key, snapshot[key])
 
     def snapshot(self):
-        return {k: v for k, v in self.__dict__.items() if k != 'limits'}
+        return {k: list(v) if isinstance(v, (list, set)) else v
+                for k, v in self.__dict__.items() if k != 'limits'}
 
     def update(self, t: Telemetry, risk=None, rate=0.0):
         now = t.timestamp.timestamp()
@@ -73,17 +75,37 @@ class Controller:
                     'reason': reason, 'source': source, 'timestamp': t.timestamp.isoformat()})
                 self.state, self.entered, self.last_reason = state, now, reason
 
+        # Identify runtime sensor failures vs uncommissioned pending sensors
+        runtime_sensor_failures = []
+        for s_name in ('chamber', 'heatsink', 'current'):
+            if getattr(t.sensor_health, s_name):
+                if s_name not in self.commissioned_sensors:
+                    self.commissioned_sensors.append(s_name)
+            else:
+                is_commissioned = (t.mode == 'SIMULATION') or (s_name in self.commissioned_sensors)
+                if is_commissioned:
+                    runtime_sensor_failures.append(s_name)
+
+        if getattr(t.sensor_health, 'sht31') and 'sht31' not in self.commissioned_sensors:
+            self.commissioned_sensors.append('sht31')
+        if getattr(t.sensor_health, 'door') and 'door' not in self.commissioned_sensors:
+            self.commissioned_sensors.append('door')
+
+        has_pending_sensors = t.mode == 'HARDWARE' and any(s not in self.commissioned_sensors for s in ('chamber', 'heatsink', 'current'))
+        advisory_status = 'HARDWARE_PENDING_SENSORS' if has_pending_sensors else None
+
         critical = None
-        if not all((t.sensor_health.chamber, t.sensor_health.heatsink, t.sensor_health.current)):
-            critical = 'Critical sensor invalid; cooling inhibited'
-        elif t.heatsink_temp_c >= L.hot_limit_c:
+        if runtime_sensor_failures:
+            critical = f"Commissioned critical sensor ({', '.join(runtime_sensor_failures)}) runtime failure; cooling inhibited"
+        elif t.heatsink_temp_c is not None and t.heatsink_temp_c >= L.hot_limit_c:
             critical = 'Shared heatsink overtemperature; both cooling channels inhibited'
-        elif t.primary_current_a >= L.current_limit_a:
+        elif t.primary_current_a is not None and t.primary_current_a >= L.current_limit_a:
             critical = 'Primary overcurrent; manual electrical inspection required'
-        elif (not t.primary_cooling and t.primary_current_a > L.off_current_max_a and
+        elif (not t.primary_cooling and t.primary_current_a is not None and t.primary_current_a > L.off_current_max_a and
               (self.off_transition_at is None or now-self.off_transition_at >= 0.5)):
             critical = 'Primary draws current while commanded OFF; backup inhibited'
-        elif t.chamber_temp_c >= L.critical_c and (self.cooled_once or now-self.started >= L.initial_cooldown_s):
+        elif (t.chamber_temp_c is not None and t.chamber_temp_c >= L.critical_c and
+              (self.cooled_once or now-self.started >= L.initial_cooldown_s)):
             critical = 'Chamber exceeded the configured demonstration critical limit'
 
         if critical and self.state not in ('CRITICAL_FAILURE', 'REROUTING'):
@@ -92,6 +114,26 @@ class Controller:
             # This is a request to route; a destination may still be unavailable.
             transition('REROUTING', 'Cooling latched OFF; request a compatible facility')
         elif self.state not in ('REROUTING',):
+            if has_pending_sensors:
+                # Hardware with uncommissioned sensors: edge loop is authoritative
+                self.state = t.system_state
+                self.last_reason = 'ESP32 edge safety loop authoritative; physical probes pending'
+                self.primary = False
+                self.backup = False
+                return {
+                    'state': t.system_state,
+                    'primary_cooling': False,
+                    'backup_cooling': False,
+                    'alarm': t.system_state in ('CRITICAL_FAILURE', 'REROUTING'),
+                    'tier': 3 if t.system_state in ('CRITICAL_FAILURE', 'REROUTING') else
+                            2 if t.system_state in ('PRIMARY_FAULT', 'BACKUP_ACTIVE', 'RECOVERY') else
+                            1 if t.system_state == 'WARNING' else 0,
+                    'reason': self.last_reason,
+                    'transitions': transitions,
+                    'authority': 'ESP32_EDGE_LOOP',
+                    'advisory_status': advisory_status
+                }
+
             if t.primary_cooling:
                 if self.on_since is None:
                     self.on_since = now
@@ -99,9 +141,9 @@ class Controller:
                 self.on_since = None
 
             electrical_fault = (t.primary_cooling and self.on_since is not None and
-                now - self.on_since >= L.current_grace_s and t.primary_current_a < L.current_min_a)
+                now - self.on_since >= L.current_grace_s and t.primary_current_a is not None and t.primary_current_a < L.current_min_a)
             thermal_fault = (t.primary_cooling and t.door_open is False and
-                t.chamber_temp_c > L.warning_c and rate > 0.15)
+                t.chamber_temp_c is not None and t.chamber_temp_c > L.warning_c and rate > 0.15)
             injected = t.fault_injection == 'PRIMARY_FAILURE'
             bad = electrical_fault or thermal_fault or injected
             if bad:
@@ -109,9 +151,11 @@ class Controller:
                     self.bad_since = now
             else:
                 self.bad_since = None
-            warning = (bad or t.chamber_temp_c > L.warning_c or
-                t.door_open_s >= L.door_warning_s or not t.sensor_health.sht31 or
-                not t.sensor_health.door or (risk is not None and risk >= 0.65))
+            sht31_fault = ('sht31' in self.commissioned_sensors or t.mode == 'SIMULATION') and not t.sensor_health.sht31
+            door_fault = ('door' in self.commissioned_sensors or t.mode == 'SIMULATION') and not t.sensor_health.door
+            warning = (bad or (t.chamber_temp_c is not None and t.chamber_temp_c > L.warning_c) or
+                t.door_open_s >= L.door_warning_s or sht31_fault or door_fault or
+                (risk is not None and risk >= 0.65))
 
             if self.state in ('NORMAL', 'WARNING'):
                 if bad and now - self.bad_since >= L.fault_confirm_s:
@@ -124,7 +168,7 @@ class Controller:
                 else:
                     transition('NORMAL', 'Warning cleared')
             elif self.state == 'PRIMARY_FAULT':
-                if not t.primary_cooling and t.primary_current_a <= L.off_current_max_a:
+                if not t.primary_cooling and t.primary_current_a is not None and t.primary_current_a <= L.off_current_max_a:
                     if self.primary_off_since is None:
                         self.primary_off_since = now
                     if now - self.primary_off_since >= L.break_before_make_s:
@@ -138,7 +182,7 @@ class Controller:
             elif self.state in ('BACKUP_ACTIVE', 'RECOVERY'):
                 if t.fault_injection == 'BACKUP_FAILURE':
                     transition('CRITICAL_FAILURE', 'Injected backup failure', 'FAULT_INJECTION')
-                elif t.chamber_temp_c <= L.high_c and rate <= 0.05:
+                elif t.chamber_temp_c is not None and t.chamber_temp_c <= L.high_c and rate <= 0.05:
                     if self.good_since is None:
                         self.good_since = now
                     if now - self.good_since >= L.recovery_s:
@@ -156,9 +200,9 @@ class Controller:
             self.primary = self.backup = False
         else:
             wants = self.backup if self.state in ('BACKUP_ACTIVE', 'RECOVERY') else self.primary
-            if t.chamber_temp_c >= L.high_c:
+            if t.chamber_temp_c is not None and t.chamber_temp_c >= L.high_c:
                 wants = True
-            elif t.chamber_temp_c <= L.low_c:
+            elif t.chamber_temp_c is not None and t.chamber_temp_c <= L.low_c:
                 wants = False
             if self.state in ('BACKUP_ACTIVE', 'RECOVERY'):
                 self.primary, self.backup = False, wants
@@ -171,4 +215,5 @@ class Controller:
                 2 if self.state in ('PRIMARY_FAULT', 'BACKUP_ACTIVE', 'RECOVERY') else
                 1 if self.state == 'WARNING' else 0,
             'reason': self.last_reason, 'transitions': transitions,
-            'authority': 'SIMULATED_LOCAL_CONTROL' if t.mode == 'SIMULATION' else 'ADVISORY_ONLY'}
+            'authority': 'SIMULATED_LOCAL_CONTROL' if t.mode == 'SIMULATION' else 'ESP32_EDGE_LOOP',
+            'advisory_status': advisory_status}

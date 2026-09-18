@@ -86,7 +86,20 @@ class Service:
             history=[Telemetry.model_validate(x.payload) for x in reversed(recent)
                      if datetime.fromisoformat(x.timestamp)<t.timestamp]
             feature=features_for([*history,t])
-            prediction=self.predictor.predict(feature)
+            if t.mode == 'HARDWARE' and feature is None:
+                prediction = {
+                    'status': 'HARDWARE_WAITING_FOR_SENSORS',
+                    'xgboost_probability': None,
+                    'random_forest_probability': None,
+                    'ensemble_probability': None,
+                    'inference_ms': None,
+                    'model_version': self.predictor.manifest.get('model_version'),
+                    'training_provenance': 'HARDWARE_PENDING_PHYSICAL_SENSORS',
+                    'hardware_validated': False,
+                    'message': 'Prediction unavailable — waiting for valid physical sensor data.'
+                }
+            else:
+                prediction=self.predictor.predict(feature)
             if archive:
                 decision={'state':t.system_state,'authority':'ARCHIVED_NO_CONTROL',
                     'reason':'Buffered, stale or out-of-order telemetry; no live decision',
@@ -197,8 +210,12 @@ class Service:
             p=s.scalar(select(Prediction).where(Prediction.telemetry_id==t.id)) if t else None
             route=s.scalar(select(ReroutingEvent).where(ReroutingEvent.device_id==device_id)
                 .order_by(ReroutingEvent.id.desc()).limit(1))
+            current_state = d.controller.get('state', 'NORMAL')
+            if d.mode == 'HARDWARE' and t:
+                telemetry_data = t.payload if hasattr(t, 'payload') else {}
+                current_state = telemetry_data.get('system_state', current_state)
             return {'device':serialize(d),'telemetry':serialize(t) if t else None,
                 'prediction':p.payload if p else None,'rerouting':route.payload if route and
-                    d.controller.get('state') in ('CRITICAL_FAILURE','REROUTING') else None,
+                    current_state in ('CRITICAL_FAILURE','REROUTING') else None,
                 'connectivity':'ONLINE' if age is not None and age<20 else 'STALE' if age is not None else 'NO_DATA',
                 'seconds_since_received':round(age,1) if age is not None else None}
