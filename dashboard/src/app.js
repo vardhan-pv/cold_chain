@@ -224,24 +224,137 @@ function chartCard(field,label,unit,range=false){
 
 function kpis(){
   const t=cache.latest?.telemetry?.payload||{};
-  return `<div class="kpis">${[['Chamber temperature',t.chamber_temp_c,'°C','DS18B20 / chamber'],['Relative humidity',t.humidity_pct,'%','SHT31 / chamber'],['Heatsink temperature',t.heatsink_temp_c,'°C','DS18B20 / hot side'],['Primary current',t.primary_current_a,'A','ACS712 / primary branch']].map(([l,v,u,f])=>`<section class="card"><div class="kpi-label">${l}<span>↗</span></div><div class="kpi-value">${fmt(v)}<small>${u}</small></div><div class="kpi-foot">${Number.isFinite(v)?'<span class="status-dot"></span>':'△ '}${f}</div></section>`).join('')}</div>`;
+  const isHardware = appMode === 'HARDWARE';
+  return `<div class="kpis">${[
+    ['Chamber temperature',t.chamber_temp_c,'°C','DS18B20 / chamber'],
+    ['Relative humidity',t.humidity_pct,'%','SHT31 / chamber'],
+    ['Heatsink temperature',t.heatsink_temp_c,'°C','DS18B20 / hot side'],
+    ['Primary current',t.primary_current_a,'A','ACS712 / primary branch']
+  ].map(([l,v,u,f])=>{
+    const hasValue = Number.isFinite(v);
+    const valueDisplay = hasValue ? `${fmt(v)}<small>${u}</small>` : '—';
+    const footerText = hasValue ? `<span class="status-dot"></span>${f}` : (isHardware ? `△ Pending hardware sensor (${f.split('/')[0].trim()})` : `△ Simulated sensor unavailable`);
+    return `<section class="card"><div class="kpi-label">${l}<span>↗</span></div><div class="kpi-value">${valueDisplay}</div><div class="kpi-foot">${footerText}</div></section>`;
+  }).join('')}</div>`;
 }
 
 function row(label,val){return `<div class="status-row"><span>${esc(label)}</span><strong>${esc(val)}</strong></div>`;}
 
 function control(){
   const latest=cache.latest,t=latest?.telemetry?.payload||{},d=latest?.telemetry?.decision||{};
-  return `<section class="card"><div class="card-head"><h2>Cooling & recovery</h2>${badge('TIER '+(d.tier??'—'))}</div><div class="state-panel"><p>ANALYZED SYSTEM STATE</p><div class="big-state">${esc((d.state||'NO_DATA').replaceAll('_',' '))}</div><p>${esc(d.reason||'Waiting for telemetry')}</p></div>${row('Primary output observed',t.primary_cooling===undefined?'UNAVAILABLE':t.primary_cooling?'ON':'OFF')}${row('Backup output observed',t.backup_cooling===undefined?'UNAVAILABLE':t.backup_cooling?'ON':'OFF')}${row('Door',t.door_open==null?'UNAVAILABLE':t.door_open?'OPEN':'CLOSED')}${row('Edge-reported state',t.system_state)}${row('Control authority',t.mode==='HARDWARE'?'ESP32 local loop':'Simulated local loop')}<div class="state-steps">${[0,1,2,3].map(i=>`<span class="${(d.tier??-1)>=i?'done':''}"></span>`).join('')}</div><p class="card-sub">Requested actions and observed outputs are recorded separately.</p></section>`;
+  const isHardware = (t.mode || appMode) === 'HARDWARE';
+  const edgeState = t.system_state || 'NORMAL';
+  const authoritativeState = isHardware ? edgeState : (d.state || edgeState || 'NO_DATA');
+  const advisoryNote = isHardware
+    ? (d.advisory_status === 'HARDWARE_PENDING_SENSORS'
+        ? 'ESP32 edge safety loop authoritative · Physical probes pending'
+        : (d.reason || 'ESP32 edge safety loop authoritative'))
+    : (d.reason || 'Simulated closed-loop control');
+
+  return `<section class="card">
+    <div class="card-head">
+      <div>
+        <h2>Current System State</h2>
+        <p class="card-sub">${isHardware ? 'Live ESP32-S3 edge authority' : 'Autonomous simulated closed loop'}</p>
+      </div>
+      ${badge(isHardware ? 'HARDWARE' : 'SIMULATION', isHardware ? 'success' : 'neutral')}
+    </div>
+    <div class="state-panel">
+      <p>${isHardware ? 'AUTHORITATIVE CURRENT STATE' : 'ANALYZED SYSTEM STATE'}</p>
+      <div class="big-state">${esc(authoritativeState.replaceAll('_',' '))}</div>
+      <p>${esc(advisoryNote)}</p>
+    </div>
+    ${row('Primary output observed', t.primary_cooling === undefined ? 'UNAVAILABLE' : t.primary_cooling ? 'ON' : 'OFF')}
+    ${row('Backup output observed', t.backup_cooling === undefined ? 'UNAVAILABLE' : t.backup_cooling ? 'ON' : 'OFF')}
+    ${row('Door (Reed switch)', t.door_open == null ? 'UNAVAILABLE' : t.door_open ? 'OPEN' : 'CLOSED')}
+    ${row('Edge-reported state', edgeState)}
+    ${row('Cloud advisory analysis', (d.state || 'NORMAL').replaceAll('_',' '))}
+    ${row('Control authority', isHardware ? 'ESP32 local safety loop (Hardware)' : 'Simulated local loop')}
+    <div class="state-steps">${[0,1,2,3].map(i=>`<span class="${(d.tier??-1)>=i?'done':''}"></span>`).join('')}</div>
+    <p class="card-sub">${isHardware ? 'Local edge protection governs physical outputs. Cloud operates in advisory supervision.' : 'Requested actions and observed outputs are recorded separately.'}</p>
+  </section>`;
 }
 
 function risks(){
   const p=cache.latest?.prediction||{};
-  return `<div class="three-col">${[['XGBoost','xgboost_probability'],['Random Forest','random_forest_probability'],['Weighted ensemble','ensemble_probability']].map(([name,key])=>`<section class="card"><div class="card-head"><h2>${name}</h2>${badge('ML','neutral')}</div><div class="risk">${p[key]==null?'Unavailable':fmt(p[key]*100,1)+'%'}</div><div class="bar"><svg viewBox="0 0 100 5" preserveAspectRatio="none"><rect width="${(p[key]||0)*100}" height="5" fill="#4c9070"/></svg></div><p class="model-note">${esc(p.training_provenance||'No model loaded')} · ${esc(p.status||'NO_DATA')}</p></section>`).join('')}</div>`;
+  const isHardware = appMode === 'HARDWARE';
+  const hasInference = Number.isFinite(p.ensemble_probability);
+
+  return `<div class="three-col">${[
+    ['XGBoost','xgboost_probability'],
+    ['Random Forest','random_forest_probability'],
+    ['Weighted ensemble','ensemble_probability']
+  ].map(([name,key])=>{
+    let valueText = 'Unavailable';
+    let barWidth = 0;
+    let noteText = '';
+
+    if (hasInference && !isHardware) {
+      valueText = fmt(p[key]*100,1)+'%';
+      barWidth = (p[key]||0)*100;
+      noteText = `${esc(p.training_provenance||'SIMULATED_DATA')} · INFERENCE ACTIVE`;
+    } else if (isHardware) {
+      if (hasInference) {
+        valueText = fmt(p[key]*100,1)+'%';
+        barWidth = (p[key]||0)*100;
+        noteText = 'HARDWARE DATA · LIVE INFERENCE';
+      } else {
+        valueText = '<span style="font-size:15px;color:var(--muted);font-weight:500;">Waiting for physical sensor data</span>';
+        barWidth = 0;
+        noteText = 'HARDWARE DATA · WAITING FOR SENSOR INPUT';
+      }
+    } else {
+      valueText = 'Waiting for telemetry';
+      noteText = 'SIMULATION · IDLE';
+    }
+
+    return `<section class="card">
+      <div class="card-head">
+        <h2>${name}</h2>
+        ${badge(isHardware ? (hasInference ? 'LIVE ML' : 'PENDING SENSORS') : 'ML SIM', isHardware && !hasInference ? 'neutral' : 'success')}
+      </div>
+      <div class="risk">${valueText}</div>
+      <div class="bar">
+        <svg viewBox="0 0 100 5" preserveAspectRatio="none">
+          <rect width="${barWidth}" height="5" fill="#4c9070"/>
+        </svg>
+      </div>
+      <p class="model-note">${noteText}</p>
+    </section>`;
+  }).join('')}</div>`;
 }
 
 function timeline(limit=8){
   const events=(cache['self-healing']||[]).slice(0,limit);
-  return `<section class="card"><div class="card-head"><div><h2>Self-healing activity</h2><p class="card-sub">Newest first · persistent event log</p></div>${badge(events.length+' EVENTS','neutral')}</div><div class="timeline">${events.length?events.map(e=>`<div class="timeline-item"><time>${esc(clock(e.timestamp))}</time><div><strong>${esc(e.payload.new_state.replaceAll('_',' '))}</strong><p>${esc(e.payload.reason)}</p><p>${esc(e.payload.source)} · ${esc(e.payload.result)}</p></div></div>`).join(''):'<div class="empty">No state transitions recorded in this run.</div>'}</div></section>`;
+  return `<section class="card">
+    <div class="card-head">
+      <div>
+        <h2>Self-healing event history</h2>
+        <p class="card-sub">Historical transition log · newest first · non-active historical events</p>
+      </div>
+      ${badge(events.length+' LOGGED','neutral')}
+    </div>
+    <div class="timeline">${events.length?events.map(e=>{
+      const p = e.payload || {};
+      const eventMode = p.mode || (e.device_id?.startsWith('CCU-SIM') ? 'SIMULATION' : 'HARDWARE');
+      const isResolved = p.resolved !== false;
+      const isFaultInjection = p.source === 'FAULT_INJECTION';
+      return `<div class="timeline-item">
+        <time>${esc(clock(e.timestamp))}</time>
+        <div>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;">
+            <strong>${esc((p.new_state || 'UNKNOWN').replaceAll('_',' '))}</strong>
+            <span class="badge ${eventMode==='HARDWARE'?'success':'neutral'}">${esc(eventMode)}</span>
+            <span class="badge ${isResolved?'neutral':'danger'}">${isResolved?'HISTORICAL / RESOLVED':'ACTIVE'}</span>
+            ${isFaultInjection?'<span class="badge warn">FAULT INJECTION</span>':''}
+          </div>
+          <p>${esc(p.reason || 'Transition recorded')}</p>
+          <p class="card-sub">Previous: ${esc((p.previous_state||'NONE').replaceAll('_',' '))} · Source: ${esc(p.source || 'SYSTEM')} · Result: ${esc(p.result || 'LOGGED')}</p>
+        </div>
+      </div>`;
+    }).join(''):'<div class="empty">No historical self-healing transitions for this device. Current state is healthy.</div>'}
+    </div>
+  </section>`;
 }
 
 function map(){
@@ -325,7 +438,7 @@ function render(){
   if(page==='healing')html=`<div class="two-col">${timeline(100)}${control()}</div>`+commandTable();
   if(page==='equipment')html=`<div class="equipment">${[['ESP32-S3','Edge controller','Acquisition and local control. Pin assignment awaits exact board.'],['DS18B20 × 2','Temperature probes','One chamber probe, one shared heatsink probe.'],['SHT31','Temperature & humidity','Secondary chamber temperature and humidity.'],['ACS712 20A × 1','Primary current only','Backup current requires an external meter.'],['Reed switch','Door monitoring','Door events are distinguished from cooling failures.'],['NEO-6M','GPS location','No-fix state uses null coordinates.'],['TEC1-12706','Primary cooling','Independently switched, fused primary branch.'],['TEC1-12701 / 12703','Backup cooling','Primary OFF confirmation precedes activation.'],['2-channel MOSFET','Cooling interlock','Both Peltiers must never be commanded ON together.'],['Shared heatsink + fan','Thermal assembly','Fan uses unswitched 12 V; shared overheating inhibits both Peltiers.'],['12 V / 15 A + 5 V','Separate supplies','Cooling supply and regulated controller USB supply.'],['Buzzer + 2–3 LEDs','Local indication','OLED and push buttons optional additions.']].map(([a,b,c])=>`<section class="card">${badge(appMode==='HARDWARE'?'HARDWARE MODE':'SIMULATION','neutral')}<h2>${esc(a)}</h2><h3>${esc(b)}</h3><p>${esc(c)}</p></section>`).join('')}</div>`;
   if(page==='routing')html=map()+`<section class="card"><h2>Facility catalogue</h2><p class="card-sub">Demo records are fictional. Real hardware uses VERIFIED facilities only.</p>${table(['Facility','Available','Temperature °C','Capacity kg','Source'],(cache.warehouses||[]).map(w=>[w.name,w.available?'Yes':'No',w.minimum_temperature+' to '+w.maximum_temperature,w.capacity,w.source]))}</section>`;
-  if(page==='alerts')html=`<section class="card"><h2>Recorded faults</h2>${(cache.faults||[]).length?table(['Time','State','Reason','Source','Lifecycle'],cache.faults.map(e=>[clock(e.timestamp),e.payload.new_state,e.payload.reason,e.payload.source,e.payload.resolved?e.payload.resolution:'ACTIVE'])):'<div class="empty">No fault events recorded for this device.</div>'}</section>`;
+  if(page==='alerts')html=`<section class="card"><h2>Recorded faults</h2>${(cache.faults||[]).length?table(['Time','Mode','State','Reason','Source','Lifecycle'],cache.faults.map(e=>[clock(e.timestamp),e.payload.mode||'SYSTEM',e.payload.new_state,e.payload.reason,e.payload.source,e.payload.resolved?(e.payload.resolution||'RESOLVED'):'ACTIVE'])):'<div class="empty">No fault events recorded for this device.</div>'}</section>`;
   if(page==='history')html=`<section class="card"><div class="card-head"><h2>Telemetry history</h2><button id="download-history" class="secondary">Export JSON</button></div>${table(['Acquired','Sequence','Chamber °C','Current A','Observed state','Decision','Mode','Archived'],(cache.history||[]).map(r=>[clock(r.timestamp),r.sequence,fmt(r.payload.chamber_temp_c),fmt(r.payload.primary_current_a),r.payload.system_state,r.decision.state,r.mode,r.archived?'Yes':'No']))}</section>`;
   if(page==='analytics'){const m=system.model||{};html=`<section class="card"><div class="card-head"><h2>Held-out test results</h2>${badge(m.training_provenance||'UNAVAILABLE','warn')}</div>${table(['Estimator','Precision','Recall','F1','ROC AUC','Test samples'],Object.entries(m.test||{}).map(([name,v])=>[name,fmt(v.precision,3),fmt(v.recall,3),fmt(v.f1,3),fmt(v.roc_auc,3),v.samples]))}<p class="card-sub">${esc(m.split_method)}. Test evaluation on held-out datasets.</p></section><div class="three-col">${Object.entries(m.test||{}).map(([n,v])=>`<section class="card"><h2>${esc(n)} confusion matrix</h2>${table(['Actual / Predicted','Normal','Anomaly'],[['Normal',...v.confusion_matrix[0]],['Anomaly',...v.confusion_matrix[1]]])}</section>`).join('')}</div>`;}
   if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health reported by source</h2>${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k,v?'VALID':'INVALID')).join('')}${row('GPS',t?.gps.fix?'FIX':'NO FIX')}</section></div>`;
