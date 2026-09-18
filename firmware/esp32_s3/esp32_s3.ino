@@ -1,54 +1,80 @@
-// Hardware adapter is intentionally uncommissioned until the purchased board and interfaces are checked.
+#include <WiFi.h>
 #include "config.h"
-#include <esp_system.h>
 #include "sensors.h"
 #include "cooling.h"
-#include "network.h"
+#include "telemetry_net.h"
 #include "display.h"
 #include <Preferences.h>
 #include <esp_task_wdt.h>
 #include <esp_arduino_version.h>
+#include <esp_system.h>
+
 static coldchain::Controller controller;
 static Preferences prefs;
 static uint32_t lastSafety=0,lastTelemetry=0,lastDisplay=0;
 static bool savedLatch=false,injectPrimary=false,injectBackup=false;
 static String command;
 
+static const char* resetReasonName(esp_reset_reason_t r) {
+  switch(r) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_SW:        return "SOFTWARE";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WDT";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT";
+    case ESP_RST_WDT:       return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "UNKNOWN";
+  }
+}
+
 void setup(){
   Serial.begin(115200);
-  delay(100);
-  Serial.printf("\n[BOOT] reset_reason=%d\n", (int)esp_reset_reason());
-  Serial.println("[BOOT] 1 cooling start");
-  coolingBegin(); // Always set inactive levels before starting sensors/network.
-  Serial.println("[BOOT] 1 cooling OK");
-  Serial.println("[BOOT] 2 prefs start");
-  prefs.begin("coldchain",false);savedLatch=prefs.getBool("fault",false);if(savedLatch)controller.latch();
-  Serial.println("[BOOT] 2 prefs OK");
+  delay(200); // Allow USB-CDC serial to stabilize on ESP32-S3
+
+  esp_reset_reason_t reason = esp_reset_reason();
+  Serial.printf("\n[BOOT] Reset reason: %d (%s)\n", (int)reason, resetReasonName(reason));
+  Serial.printf("[BOOT] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+
+  Serial.println("[BOOT] 1 config start");
+  prefs.begin("coldchain",false);
+  savedLatch=prefs.getBool("fault",false);
+  if(savedLatch)controller.latch();
+  Serial.println("[BOOT] 1 config OK");
+
+  Serial.println("[BOOT] 2 GPIO start");
+  if(OPTIONAL_FAULT_BUTTONS){
+    if(PIN_INJECT_PRIMARY>=0)pinMode(PIN_INJECT_PRIMARY,INPUT_PULLUP);
+    if(PIN_INJECT_BACKUP>=0)pinMode(PIN_INJECT_BACKUP,INPUT_PULLUP);
+  }
+  Serial.println("[BOOT] 2 GPIO OK");
+
   Serial.println("[BOOT] 3 sensors start");
   sensorsBegin();
   Serial.println("[BOOT] 3 sensors OK");
-  Serial.println("[BOOT] 4 display start");
+
+  Serial.println("[BOOT] 4 GPS start");
+  gpsBegin();
+  Serial.println("[BOOT] 4 GPS OK");
+
+  Serial.println("[BOOT] 5 display start");
   displayBegin();
-  Serial.println("[BOOT] 4 display OK");
-  Serial.println("[BOOT] 5 fault_buttons start");
-  if(OPTIONAL_FAULT_BUTTONS){if(PIN_INJECT_PRIMARY>=0)pinMode(PIN_INJECT_PRIMARY,INPUT_PULLUP);if(PIN_INJECT_BACKUP>=0)pinMode(PIN_INJECT_BACKUP,INPUT_PULLUP);}
-  Serial.println("[BOOT] 5 fault_buttons OK");
-  Serial.printf("[BOOT] free_heap=%lu\n", (unsigned long)ESP.getFreeHeap());
-  Serial.println("[BOOT] 6 network start");
+  Serial.println("[BOOT] 5 display OK");
+
+  Serial.println("[BOOT] 6 cooling start");
+  coolingBegin(); // Always set inactive levels before starting network.
+  Serial.println("[BOOT] 6 cooling OK");
+
+  Serial.println("[BOOT] 7 network start");
   networkBegin();
-  Serial.println("[BOOT] 6 network OK");
-  Serial.println("[BOOT] 7 watchdog start");
-#if ESP_ARDUINO_VERSION_MAJOR >= 3
-  esp_task_wdt_config_t config={.timeout_ms=8000,.idle_core_mask=0,.trigger_panic=true};
-  esp_task_wdt_reconfigure(&config);
-#else
-  esp_task_wdt_init(8,true);
-#endif
-  esp_task_wdt_add(nullptr);
-  Serial.println("[BOOT] 7 watchdog OK");
+  Serial.println("[BOOT] 7 network OK");
+
   Serial.printf("{\"event\":\"boot\",\"hardware_verified\":false,\"commissioned\":%s}\n",coolingConfigured()?"true":"false");
-  Serial.println("[BOOT] setup() COMPLETE");
+  Serial.println("[BOOT] Setup complete, entering loop");
 }
+
 void loop(){
   const uint32_t now=millis();sensorsTick(now);SensorData s=sensorSnapshot(now);
   while(Serial.available()){
@@ -87,5 +113,5 @@ void loop(){
   }
   if(now-lastTelemetry>=TELEMETRY_MS){lastTelemetry=now;networkEnqueue(s,controller.output,now,injectBackup?"BACKUP_FAILURE":injectPrimary?"PRIMARY_FAILURE":"NONE");}
   if(now-lastDisplay>=500){lastDisplay=now;displayTick(s,controller.output,networkHealthy(),now);}
-  esp_task_wdt_reset();delay(1); // Yield to RTOS. No network operation runs in this safety loop.
+  delay(1); // Yield to RTOS. No network operation runs in this safety loop.
 }

@@ -32,10 +32,12 @@ static void pinOff(int pin) {
 }
 
 void coolingBegin() {
+  Serial.printf("[BOOT] 6a PRIMARY=%d BACKUP=%d FAN=%d\n", PIN_PRIMARY, PIN_BACKUP, PIN_FAN);
   pinOff(PIN_PRIMARY);
   pinOff(PIN_BACKUP);
   if (PIN_FAN >= 0) {
     pinOff(PIN_FAN);
+    Serial.printf("[BOOT] 6a fan pin %d off OK\n", PIN_FAN);
   }
   primary = backup = false;
   offAt = millis();
@@ -48,22 +50,22 @@ void coolingApply(coldchain::Output command, uint32_t now) {
   }
   bool switching = (primary && command.backup) || (backup && command.primary);
   if (primary && !command.primary) {
-    digitalWrite(PIN_PRIMARY, OUTPUT_INACTIVE);
+    if (PIN_PRIMARY >= 0) digitalWrite(PIN_PRIMARY, OUTPUT_INACTIVE);
     primary = false;
     offAt = now;
   }
   if (backup && !command.backup) {
-    digitalWrite(PIN_BACKUP, OUTPUT_INACTIVE);
+    if (PIN_BACKUP >= 0) digitalWrite(PIN_BACKUP, OUTPUT_INACTIVE);
     backup = false;
     offAt = now;
   }
   if (switching) return;
   if (command.primary && !backup && now - offAt >= 2000) {
-    digitalWrite(PIN_PRIMARY, OUTPUT_ACTIVE);
+    if (PIN_PRIMARY >= 0) digitalWrite(PIN_PRIMARY, OUTPUT_ACTIVE);
     primary = true;
   }
   if (command.backup && !primary && now - offAt >= 2000) {
-    digitalWrite(PIN_BACKUP, OUTPUT_ACTIVE);
+    if (PIN_BACKUP >= 0) digitalWrite(PIN_BACKUP, OUTPUT_ACTIVE);
     backup = true;
   }
 }

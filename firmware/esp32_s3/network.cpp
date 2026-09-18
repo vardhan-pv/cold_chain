@@ -1,7 +1,7 @@
-#include "network.h"
+#include <WiFi.h>
+#include "telemetry_net.h"
 #include "config.h"
 #include "cooling.h"
-#include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -59,6 +59,7 @@ static void acknowledgeLocalDecision(){
 static std::atomic<bool> clockSynchronized{false};
 
 static void syncNTP() {
+  Serial.println("[BOOT] 8 NTP start");
   Serial.println("[NTP] Starting synchronization...");
   configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
   for (int attempt = 1; attempt <= 30; attempt++) {
@@ -67,6 +68,7 @@ static void syncNTP() {
     if (now > 1700000000) {
       clockSynchronized = true;
       Serial.println("[NTP] CLOCK SYNCHRONIZED");
+      Serial.println("[BOOT] 8 NTP OK");
       return;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -75,76 +77,145 @@ static void syncNTP() {
 }
 
 static void worker(void*){
-  Serial.println("[BOOT] 8 network_task started");
-  Serial.printf("[BOOT] 8 task_stack_hwm=%lu\n", (unsigned long)uxTaskGetStackHighWaterMark(nullptr));
-  WiFi.mode(WIFI_STA);
-  Serial.println("[BOOT] 8 WiFi.mode OK");
-  if(strlen(WIFI_SSID)){WiFi.begin(WIFI_SSID,WIFI_PASSWORD);Serial.println("[BOOT] 8 WiFi.begin OK");}
-  uint32_t reconnectAt=0,retryMs=1000,lastNtpRetry=0;
-  bool wasConnected=false;
-  Packet packet;bool holding=false;
-  Serial.printf("[BOOT] 8 task_stack_hwm_after_packet=%lu\n", (unsigned long)uxTaskGetStackHighWaterMark(nullptr));
+  Serial.println("[BOOT] 7 network worker running");
+  
+  if (strlen(WIFI_SSID) == 0) {
+    Serial.println("[WiFi] no SSID");
+  } else {
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.persistent(false);
+    
+    Serial.println("[WiFi] begin");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.println("[WiFi] connecting...");
+  }
+  
+  uint32_t connectStartedAt = millis();
+  uint32_t lastNtpRetry = 0;
+  uint32_t retryMs = 1000;
+  bool wasConnected = false;
+  bool reportedConnecting = true;
+  wl_status_t lastStatus = (wl_status_t)99;
+  static Packet packet;
+  bool holding = false;
+
   for(;;){
-    if(WiFi.status()!=WL_CONNECTED){
-      wasConnected=false;
-      if(millis()-reconnectAt>=10000){reconnectAt=millis();if(strlen(WIFI_SSID))WiFi.reconnect();}
-      vTaskDelay(pdMS_TO_TICKS(100));continue;
-    }
-    if(!wasConnected){
-      wasConnected=true;
-      Serial.println("[WiFi] Connected");
-      Serial.printf("[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
-      syncNTP();
-      lastNtpRetry=millis();
-    } else if(!clockSynchronized && (millis()-lastNtpRetry>=30000)){
-      lastNtpRetry=millis();
-      syncNTP();
-    }
-    if(!clockSynchronized){
+    wl_status_t status = WiFi.status();
+
+    if (status != WL_CONNECTED) {
+      wasConnected = false;
+      uint32_t now = millis();
+
+      if (strlen(WIFI_SSID) > 0) {
+        if (status != lastStatus) {
+          lastStatus = status;
+          switch (status) {
+            case WL_NO_SSID_AVAIL:
+              Serial.println("[WiFi] no SSID");
+              break;
+            case WL_CONNECT_FAILED:
+              Serial.println("[WiFi] auth/connect failed");
+              break;
+            case WL_IDLE_STATUS:
+            case WL_DISCONNECTED:
+            default:
+              if (!reportedConnecting) {
+                Serial.println("[WiFi] connecting...");
+                reportedConnecting = true;
+              }
+              break;
+          }
+        }
+
+        if (now - connectStartedAt >= 15000) {
+          Serial.println("[WiFi] retry after timeout");
+          WiFi.disconnect(false, false);
+          vTaskDelay(pdMS_TO_TICKS(100));
+          Serial.println("[WiFi] begin");
+          WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+          Serial.println("[WiFi] connecting...");
+          connectStartedAt = now;
+          reportedConnecting = true;
+          lastStatus = (wl_status_t)99;
+        }
+      }
+
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
     }
-    if(!holding)holding=xQueueReceive(queue,&packet,pdMS_TO_TICKS(100))==pdTRUE;
-    if(!holding)continue;
-    HTTPClient http;WiFiClient plain;WiFiClientSecure secure;
-    bool configured=false;
-    if(strncmp(BACKEND_URL,"https://",8)==0){
-      if(strlen(ROOT_CA)>0)secure.setCACert(ROOT_CA);
-      else secure.setInsecure();
-      configured=http.begin(secure,BACKEND_URL);
-    } else if(ALLOW_LAB_HTTP&&strncmp(BACKEND_URL,"http://",7)==0){
-      configured=http.begin(plain,BACKEND_URL);
+
+    if (!wasConnected) {
+      wasConnected = true;
+      reportedConnecting = false;
+      lastStatus = WL_CONNECTED;
+      connectStartedAt = millis();
+      Serial.println("[WiFi] connected");
+      Serial.printf("[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("[WiFi] RSSI: %d dBm\n", WiFi.RSSI());
+      syncNTP();
+      lastNtpRetry = millis();
+    } else if (!clockSynchronized && (millis() - lastNtpRetry >= 30000)) {
+      lastNtpRetry = millis();
+      syncNTP();
     }
-    int status=-1;
-    if(configured&&strlen(DEVICE_TOKEN)){
-      http.setConnectTimeout(2500);http.setTimeout(2500);
-      http.addHeader("Content-Type","application/json");http.addHeader("X-Device-Token",DEVICE_TOKEN);
-      status=http.POST(reinterpret_cast<uint8_t*>(packet.json),strlen(packet.json));
-      if(status>=200&&status<300){
+
+    if (!clockSynchronized) {
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    if (!holding) holding = xQueueReceive(queue, &packet, pdMS_TO_TICKS(100)) == pdTRUE;
+    if (!holding) continue;
+
+    HTTPClient http; WiFiClient plain; WiFiClientSecure secure;
+    bool configured = false;
+    if (strncmp(BACKEND_URL, "https://", 8) == 0) {
+      if (strlen(ROOT_CA) > 0) secure.setCACert(ROOT_CA);
+      else secure.setInsecure();
+      configured = http.begin(secure, BACKEND_URL);
+    } else if (ALLOW_LAB_HTTP && strncmp(BACKEND_URL, "http://", 7) == 0) {
+      configured = http.begin(plain, BACKEND_URL);
+    }
+    int status_code = -1;
+    if (configured && strlen(DEVICE_TOKEN)) {
+      http.setConnectTimeout(2500); http.setTimeout(2500);
+      http.addHeader("Content-Type", "application/json"); http.addHeader("X-Device-Token", DEVICE_TOKEN);
+      status_code = http.POST(reinterpret_cast<uint8_t*>(packet.json), strlen(packet.json));
+      Serial.printf("HTTP %d\n", status_code);
+      if (status_code >= 200 && status_code < 300) {
         JsonDocument response;
-        if(!deserializeJson(response,http.getString())&&!response["archived"].as<bool>()&&
-            !response["prediction"]["ensemble_probability"].isNull()){
-          float risk=response["prediction"]["ensemble_probability"].as<float>();
-          if(isfinite(risk)&&risk>=0&&risk<=1){advisoryRisk=risk;riskAt=millis();}
+        if (!deserializeJson(response, http.getString()) && !response["archived"].as<bool>() &&
+            !response["prediction"]["ensemble_probability"].isNull()) {
+          float risk = response["prediction"]["ensemble_probability"].as<float>();
+          if (isfinite(risk) && risk >= 0 && risk <= 1) { advisoryRisk = risk; riskAt = millis(); }
         }
       }
     }
     http.end();
-    if(status>=200&&status<300){lastSuccess=millis();holding=false;retryMs=1000;acknowledgeLocalDecision();}
-    else if(status==400||status==409||status==422){
-      // Invalid samples cannot head-of-line block all later telemetry.
-      dropped++;holding=false;Serial.printf("{\"event\":\"telemetry_rejected\",\"http\":%d,\"dropped\":%lu}\n",status,(unsigned long)dropped);
+    if (status_code >= 200 && status_code < 300) {
+      lastSuccess = millis(); holding = false; retryMs = 1000; acknowledgeLocalDecision();
+    } else if (status_code == 400 || status_code == 409 || status_code == 422) {
+      dropped++; holding = false; Serial.printf("{\"event\":\"telemetry_rejected\",\"http\":%d,\"dropped\":%lu}\n", status_code, (unsigned long)dropped);
     } else {
-      JsonDocument doc;deserializeJson(doc,packet.json);doc["buffered"]=true;serializeJson(doc,packet.json,sizeof(packet.json));
-      Serial.printf("{\"event\":\"backend_retry\",\"http\":%d,\"queued\":%u}\n",status,uxQueueMessagesWaiting(queue));
-      vTaskDelay(pdMS_TO_TICKS(retryMs));retryMs=min(retryMs*2,uint32_t(10000));
+      JsonDocument doc; deserializeJson(doc, packet.json); doc["buffered"] = true; serializeJson(doc, packet.json, sizeof(packet.json));
+      Serial.printf("{\"event\":\"backend_retry\",\"http\":%d,\"queued\":%u}\n", status_code, uxQueueMessagesWaiting(queue));
+      vTaskDelay(pdMS_TO_TICKS(retryMs)); retryMs = min(retryMs * 2, uint32_t(10000));
     }
   }
 }
 void networkBegin(){
+  Serial.println("[BOOT] 7a generating boot ID");
   snprintf(bootID,sizeof(bootID),"%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random());
-  queue=xQueueCreate(24,sizeof(Packet));
-  if(queue)xTaskCreatePinnedToCore(worker,"telemetry",16384,nullptr,1,nullptr,0);
+  Serial.printf("[BOOT] 7a boot_id=%s\n", bootID);
+  Serial.println("[BOOT] 7b creating queue");
+  queue=xQueueCreate(8,sizeof(Packet));
+  Serial.printf("[BOOT] 7b queue=%s\n", queue?"OK":"FAILED");
+  if(queue){
+    Serial.println("[BOOT] 7c creating worker task");
+    BaseType_t taskOK = xTaskCreatePinnedToCore(worker,"telemetry",16384,nullptr,1,nullptr,0);
+    Serial.printf("[BOOT] 7c worker task=%s\n", taskOK==pdPASS?"OK":"FAILED");
+  }
 }
 void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,const char* injection){
   if(!queue)return;

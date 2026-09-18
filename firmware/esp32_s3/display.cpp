@@ -4,7 +4,7 @@
 #include <WiFi.h>
 #include <Adafruit_SSD1306.h>
 
-static Adafruit_SSD1306 oled(128, 64, &Wire, -1);
+static Adafruit_SSD1306* oled = nullptr;
 static bool oledReady = false;
 
 static void set(int pin, bool on) {
@@ -12,14 +12,21 @@ static void set(int pin, bool on) {
 }
 
 void displayBegin() {
+  Serial.printf("[BOOT] 5a LEDs: GREEN=%d YELLOW=%d RED=%d BUZZER=%d\n", PIN_GREEN, PIN_YELLOW, PIN_RED, PIN_BUZZER);
   for (int p : {PIN_GREEN, PIN_YELLOW, PIN_RED, PIN_BUZZER}) {
     if (p >= 0) {
       digitalWrite(p, LOW);
       pinMode(p, OUTPUT);
+      Serial.printf("[BOOT] 5a pin %d OK\n", p);
     }
   }
+  Serial.printf("[BOOT] 5b OLED=%s SDA=%d SCL=%d\n", OPTIONAL_OLED?"true":"false", PIN_SDA, PIN_SCL);
   if (OPTIONAL_OLED && PIN_SDA >= 0 && PIN_SCL >= 0) {
-    oledReady = oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+    oled = new Adafruit_SSD1306(128, 64, &Wire, -1);
+    oledReady = oled ? oled->begin(SSD1306_SWITCHCAPVCC, 0x3C) : false;
+    Serial.printf("[BOOT] 5b OLED ready=%s\n", oledReady?"true":"false");
+  } else {
+    Serial.println("[BOOT] 5b OLED SKIPPED (disabled)");
   }
 }
 
@@ -45,15 +52,15 @@ void displayTick(const SensorData& data, const coldchain::Output& output, bool b
     set(PIN_BUZZER, false);
   }
 
-  if (oledReady) {
-    oled.clearDisplay();
-    oled.setTextSize(1);
-    oled.setTextColor(SSD1306_WHITE);
-    oled.setCursor(0, 0);
-    oled.printf("HARDWARE / PENDING\nT:%.1fC RH:%.0f%%\nP:%s B:%s\n%s\nWiFi:%s API:%s",
+  if (oledReady && oled) {
+    oled->clearDisplay();
+    oled->setTextSize(1);
+    oled->setTextColor(SSD1306_WHITE);
+    oled->setCursor(0, 0);
+    oled->printf("HARDWARE / PENDING\nT:%.1fC RH:%.0f%%\nP:%s B:%s\n%s\nWiFi:%s API:%s",
                 data.chamber, data.humidity, output.primary ? "ON" : "OFF", output.backup ? "ON" : "OFF",
                 coldchain::name(output.state), WiFi.status() == WL_CONNECTED ? "OK" : "OFF",
                 backendOK ? "OK" : "OFF");
-    oled.display();
+    oled->display();
   }
 }

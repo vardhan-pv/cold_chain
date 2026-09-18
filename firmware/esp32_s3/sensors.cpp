@@ -18,6 +18,7 @@ static float temps[61];static uint32_t times[61];static size_t count=0;
 static bool validTemp(float x){return isfinite(x)&&x>=-55&&x<=125&&x!=-127&&x!=85;}
 
 void sensorsBegin(){
+  Serial.printf("[BOOT] 3a OneWire pin=%d\n", PIN_ONEWIRE);
   if(PIN_ONEWIRE>=0){
     bus=new OneWire(PIN_ONEWIRE);probes=new DallasTemperature(bus);probes->begin();
     probes->setResolution(12);probes->setWaitForConversion(false);
@@ -27,20 +28,51 @@ void sensorsBegin(){
       for(uint8_t b:address)Serial.printf("%02X",b);
       Serial.println("\"}");
     }
+    Serial.println("[BOOT] 3a OneWire OK");
+  } else {
+    Serial.println("[BOOT] 3a OneWire SKIPPED (pin=-1)");
   }
-  if(PIN_SDA>=0&&PIN_SCL>=0){Wire.begin(PIN_SDA,PIN_SCL);Wire.setTimeOut(40);shtReady=sht.begin(SHT31_ADDRESS);}
-  if(PIN_REED>=0){pinMode(PIN_REED,INPUT_PULLUP);data.doorOK=true;reedCandidate=digitalRead(PIN_REED)==HIGH;data.doorOpen=reedCandidate;}
-  if(PIN_CURRENT>=0){analogReadResolution(12);analogSetPinAttenuation(PIN_CURRENT,ADC_11db);}
-  if(PIN_GPS_RX>=0&&PIN_GPS_TX>=0)gpsSerial.begin(9600,SERIAL_8N1,PIN_GPS_RX,PIN_GPS_TX);
+
+  Serial.printf("[BOOT] 3b I2C/SHT31 SDA=%d SCL=%d\n", PIN_SDA, PIN_SCL);
+  if(PIN_SDA>=0&&PIN_SCL>=0){Wire.begin(PIN_SDA,PIN_SCL);Wire.setTimeOut(40);shtReady=sht.begin(SHT31_ADDRESS);
+    Serial.println("[BOOT] 3b SHT31 OK");
+  } else {
+    Serial.println("[BOOT] 3b I2C SKIPPED (pins disabled)");
+  }
+
+  Serial.printf("[BOOT] 3c Reed pin=%d\n", PIN_REED);
+  if(PIN_REED>=0){pinMode(PIN_REED,INPUT_PULLUP);data.doorOK=true;reedCandidate=digitalRead(PIN_REED)==HIGH;data.doorOpen=reedCandidate;
+    Serial.println("[BOOT] 3c Reed OK");
+  } else {
+    Serial.println("[BOOT] 3c Reed SKIPPED (pin=-1)");
+  }
+
+  Serial.printf("[BOOT] 3d Current pin=%d\n", PIN_CURRENT);
+  if(PIN_CURRENT>=0){analogReadResolution(12);analogSetPinAttenuation(PIN_CURRENT,ADC_11db);
+    Serial.println("[BOOT] 3d Current OK");
+  } else {
+    Serial.println("[BOOT] 3d Current SKIPPED (pin=-1)");
+  }
 }
+
+void gpsBegin(){
+  Serial.printf("[BOOT] 4 GPS RX=%d TX=%d\n", PIN_GPS_RX, PIN_GPS_TX);
+  if(PIN_GPS_RX>=0&&PIN_GPS_TX>=0){
+    gpsSerial.begin(9600,SERIAL_8N1,PIN_GPS_RX,PIN_GPS_TX);
+    Serial.println("[BOOT] 4 GPS serial OK");
+  } else {
+    Serial.println("[BOOT] 4 GPS SKIPPED (pins disabled)");
+  }
+}
+
 void sensorsTick(uint32_t now){
-  if(PIN_GPS_RX>=0){for(int n=0;n<128&&gpsSerial.available();n++)gps.encode(gpsSerial.read());}
+  if(PIN_GPS_RX>=0&&PIN_GPS_TX>=0){for(int n=0;n<128&&gpsSerial.available();n++)gps.encode(gpsSerial.read());}
   if(time(nullptr)<1704067200&&gps.date.isValid()&&gps.time.isValid()&&gps.date.age()<30000&&gps.time.age()<30000&&gps.date.year()>=2024){
     struct tm stamp={};stamp.tm_year=gps.date.year()-1900;stamp.tm_mon=gps.date.month()-1;stamp.tm_mday=gps.date.day();
     stamp.tm_hour=gps.time.hour();stamp.tm_min=gps.time.minute();stamp.tm_sec=gps.time.second();
     setenv("TZ","UTC0",1);tzset();timeval tv={mktime(&stamp),0};settimeofday(&tv,nullptr);
   }
-  if(data.doorOK){
+  if(data.doorOK&&PIN_REED>=0){
     bool raw=digitalRead(PIN_REED)==HIGH;
     if(raw!=reedCandidate){reedCandidate=raw;reedAt=now;}
     if(now-reedAt>=DOOR_DEBOUNCE_MS&&data.doorOpen!=raw){data.doorOpen=raw;doorAt=now;}

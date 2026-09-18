@@ -1,4 +1,6 @@
 #pragma once
+#ifndef COLDCHAIN_CONTROL_CORE_H
+#define COLDCHAIN_CONTROL_CORE_H
 #include <stdint.h>
 #include <math.h>
 
@@ -99,3 +101,4 @@ class Controller {
   void change(State state,uint32_t ms,const char* why){output.state=state;entered=ms;reason=why;}
 };
 }
+#endif

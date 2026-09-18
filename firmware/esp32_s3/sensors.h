@@ -1,4 +1,6 @@
 #pragma once
+#ifndef COLDCHAIN_SENSORS_H
+#define COLDCHAIN_SENSORS_H
 #include <Arduino.h>
 #include "control_core.h"
 struct SensorData {
@@ -9,5 +11,7 @@ struct SensorData {
   bool chamberOK=false,heatsinkOK=false,shtOK=false,currentOK=false,doorOK=false,doorOpen=false,gpsFix=false;
 };
 void sensorsBegin();
+void gpsBegin();
 void sensorsTick(uint32_t now);
 SensorData sensorSnapshot(uint32_t now);
+#endif
