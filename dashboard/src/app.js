@@ -12,7 +12,14 @@ const hashParams=new URLSearchParams(location.hash.slice(1));
 if(hashParams.has('token')){token=hashParams.get('token');sessionStorage.setItem('cc_token',token);history.replaceState(null,'',location.pathname+'#overview');}
 if(hashParams.has('api')){apiUrl=hashParams.get('api');localStorage.setItem('cc_api_url',apiUrl);}
 
-function route(){page=pages.some(x=>x[0]===location.hash.slice(1))?location.hash.slice(1):'overview';render();}
+function route(){
+  page=pages.some(x=>x[0]===location.hash.slice(1))?location.hash.slice(1):'overview';
+  render();
+  const activeLink=document.querySelector(`[data-page="${page}"]`);
+  if(activeLink&&window.innerWidth<=820){
+    activeLink.scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'});
+  }
+}
 function badge(text,kind=''){return `<span class="badge ${kind}">${esc(text)}</span>`;}
 function empty(title,detail='Start a simulation or connect a registered device.'){return `<div class="card empty"><strong>${esc(title)}</strong>${esc(detail)}</div>`;}
 function fmt(v,d=1){return Number.isFinite(v)?v.toFixed(d):'—';}
@@ -57,7 +64,9 @@ $('login-form').addEventListener('submit',async e=>{
   }
 });
 
-$('logout').onclick=()=>{token='';sessionStorage.removeItem('cc_token');cache={};login();};
+const doLogout=()=>{token='';sessionStorage.removeItem('cc_token');cache={};login();};
+$('logout').onclick=doLogout;
+if($('logout-mobile'))$('logout-mobile').onclick=doLogout;
 $('nav').innerHTML=pages.map(([id,label,icon])=>`<a href="#${id}" data-page="${id}"><span aria-hidden="true">${icon}</span>${label}</a>`).join('');
 window.addEventListener('hashchange',route);
 $('refresh').onclick=refresh;
