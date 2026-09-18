@@ -19,8 +19,11 @@ static std::atomic<float> advisoryRisk{NAN};
 static char bootID[33];
 static bool beginRequest(HTTPClient& http,WiFiClient& plain,WiFiClientSecure& secure,const String& url){
   bool ready=false;
-  if(url.startsWith("https://")&&strlen(ROOT_CA)>0){secure.setCACert(ROOT_CA);ready=http.begin(secure,url);}
-  else if(ALLOW_LAB_HTTP&&url.startsWith("http://"))ready=http.begin(plain,url);
+  if(url.startsWith("https://")){
+    if(strlen(ROOT_CA)>0)secure.setCACert(ROOT_CA);
+    else secure.setInsecure();
+    ready=http.begin(secure,url);
+  } else if(ALLOW_LAB_HTTP&&url.startsWith("http://"))ready=http.begin(plain,url);
   if(ready){
     http.setConnectTimeout(1500);http.setTimeout(1500);
     http.addHeader("Content-Type","application/json");http.addHeader("X-Device-Token",DEVICE_TOKEN);
@@ -68,8 +71,13 @@ static void worker(void*){
     if(!holding)continue;
     HTTPClient http;WiFiClient plain;WiFiClientSecure secure;
     bool configured=false;
-    if(strncmp(BACKEND_URL,"https://",8)==0&&strlen(ROOT_CA)>0){secure.setCACert(ROOT_CA);configured=http.begin(secure,BACKEND_URL);}
-    else if(ALLOW_LAB_HTTP&&strncmp(BACKEND_URL,"http://",7)==0)configured=http.begin(plain,BACKEND_URL);
+    if(strncmp(BACKEND_URL,"https://",8)==0){
+      if(strlen(ROOT_CA)>0)secure.setCACert(ROOT_CA);
+      else secure.setInsecure();
+      configured=http.begin(secure,BACKEND_URL);
+    } else if(ALLOW_LAB_HTTP&&strncmp(BACKEND_URL,"http://",7)==0){
+      configured=http.begin(plain,BACKEND_URL);
+    }
     int status=-1;
     if(configured&&strlen(DEVICE_TOKEN)){
       http.setConnectTimeout(1500);http.setTimeout(1500);
