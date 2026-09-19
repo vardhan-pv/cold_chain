@@ -34,45 +34,29 @@ void setup(){
   Serial.begin(115200);
   delay(200); // Allow USB-CDC serial to stabilize on ESP32-S3
 
+  Serial.println("\n[BOOT] Cold Chain Physical Hardware");
+
   esp_reset_reason_t reason = esp_reset_reason();
-  Serial.printf("\n[BOOT] Reset reason: %d (%s)\n", (int)reason, resetReasonName(reason));
+  Serial.printf("[BOOT] Reset reason: %d (%s)\n", (int)reason, resetReasonName(reason));
   Serial.printf("[BOOT] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
 
-  Serial.println("[BOOT] 1 config start");
   prefs.begin("coldchain",false);
   savedLatch=prefs.getBool("fault",false);
   if(savedLatch)controller.latch();
-  Serial.println("[BOOT] 1 config OK");
 
-  Serial.println("[BOOT] 2 GPIO start");
   if(OPTIONAL_FAULT_BUTTONS){
     if(PIN_INJECT_PRIMARY>=0)pinMode(PIN_INJECT_PRIMARY,INPUT_PULLUP);
     if(PIN_INJECT_BACKUP>=0)pinMode(PIN_INJECT_BACKUP,INPUT_PULLUP);
   }
-  Serial.println("[BOOT] 2 GPIO OK");
 
-  Serial.println("[BOOT] 3 sensors start");
   sensorsBegin();
-  Serial.println("[BOOT] 3 sensors OK");
-
-  Serial.println("[BOOT] 4 GPS start");
   gpsBegin();
-  Serial.println("[BOOT] 4 GPS OK");
-
-  Serial.println("[BOOT] 5 display start");
+  coolingBegin(); // Always set inactive levels before starting network
   displayBegin();
-  Serial.println("[BOOT] 5 display OK");
-
-  Serial.println("[BOOT] 6 cooling start");
-  coolingBegin(); // Always set inactive levels before starting network.
-  Serial.println("[BOOT] 6 cooling OK");
-
-  Serial.println("[BOOT] 7 network start");
   networkBegin();
-  Serial.println("[BOOT] 7 network OK");
 
   Serial.printf("{\"event\":\"boot\",\"hardware_verified\":false,\"commissioned\":%s}\n",coolingConfigured()?"true":"false");
-  Serial.println("[BOOT] Setup complete, entering loop");
+  Serial.println("[BOOT] Ready");
 }
 
 void loop(){

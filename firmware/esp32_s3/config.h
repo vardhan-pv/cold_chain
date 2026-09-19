@@ -14,7 +14,7 @@ constexpr uint8_t CHAMBER_ROM[8] = {0}, HEATSINK_ROM[8] = {0};
 constexpr bool OPTIONAL_OLED = false;
 constexpr bool OPTIONAL_FAULT_BUTTONS = false;
 constexpr int PIN_INJECT_PRIMARY = -1, PIN_INJECT_BACKUP = -1;
-constexpr int PIN_FAN = -1;
+constexpr int PIN_FAN = -1, PIN_VIBRATION = -1;
 #endif
 
 constexpr uint32_t TELEMETRY_MS = 5000, SENSOR_MS = 1000, SAFETY_MS = 50, DOOR_DEBOUNCE_MS = 40;

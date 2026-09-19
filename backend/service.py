@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from threading import RLock
-import hashlib, secrets
+import hashlib, secrets, os, json
+from pathlib import Path
 from fastapi import HTTPException
 from sqlalchemy import select
 from backend.schemas import Telemetry, DeviceRegistration
@@ -30,7 +31,16 @@ class Service:
                     s.add(Warehouse(**w))
             hw_id = "CCU-HW-001"
             hw_dev = s.get(Device, hw_id)
-            hw_token = "BUH0bDTcPJGQ0VFS4P1IAfqlyOL02rABodlMFBUueVY"
+            hw_token = os.getenv("CCU_HW_DEVICE_TOKEN", "")
+            if not hw_token:
+                hw_secrets_path = Path(__file__).resolve().parents[1] / "runtime/hardware_device.json"
+                if hw_secrets_path.exists():
+                    try:
+                        hw_token = json.loads(hw_secrets_path.read_text()).get("device_token", "")
+                    except Exception:
+                        pass
+            if not hw_token:
+                hw_token = os.getenv("DEVICE_TOKEN", "BUH0bDTcPJGQ0VFS4P1IAfqlyOL02rABodlMFBUueVY")
             if not hw_dev:
                 s.add(Device(device_id=hw_id, name="ESP32-S3 Physical Node", mode="HARDWARE",
                              token_hash=digest(hw_token), controller={}, retired_boots=[]))

@@ -58,6 +58,7 @@ class Telemetry(Contract):
     sensor_health: SensorHealth
     fault_injection: Literal['NONE', 'PRIMARY_FAILURE', 'BACKUP_FAILURE'] = 'NONE'
     buffered: bool = False
+    vibration_detected: bool | None = None
 
     @field_validator('timestamp')
     @classmethod

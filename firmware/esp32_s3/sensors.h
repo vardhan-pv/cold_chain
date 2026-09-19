@@ -9,9 +9,11 @@ struct SensorData {
   uint32_t satellites=0;
   uint32_t currentAdcMv=0;
   bool chamberOK=false,heatsinkOK=false,shtOK=false,currentOK=false,doorOK=false,doorOpen=false,gpsFix=false;
+  bool vibrationOK=false,vibrationDetected=false;
 };
 void sensorsBegin();
 void gpsBegin();
 void sensorsTick(uint32_t now);
 SensorData sensorSnapshot(uint32_t now);
+bool getDiscoveredHeatsinkRom(uint8_t outRom[8]);
 #endif

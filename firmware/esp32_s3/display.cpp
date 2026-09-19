@@ -12,21 +12,25 @@ static void set(int pin, bool on) {
 }
 
 void displayBegin() {
-  Serial.printf("[BOOT] 5a LEDs: GREEN=%d YELLOW=%d RED=%d BUZZER=%d\n", PIN_GREEN, PIN_YELLOW, PIN_RED, PIN_BUZZER);
+  Serial.printf("[BOOT] LED GPIO%d\n", PIN_GREEN);
+  Serial.printf("[BOOT] Buzzer GPIO%d\n", PIN_BUZZER);
   for (int p : {PIN_GREEN, PIN_YELLOW, PIN_RED, PIN_BUZZER}) {
     if (p >= 0) {
       digitalWrite(p, LOW);
       pinMode(p, OUTPUT);
-      Serial.printf("[BOOT] 5a pin %d OK\n", p);
     }
   }
-  Serial.printf("[BOOT] 5b OLED=%s SDA=%d SCL=%d\n", OPTIONAL_OLED?"true":"false", PIN_SDA, PIN_SCL);
+
+  // Brief 200 ms status test at boot
+  if (PIN_GREEN >= 0) digitalWrite(PIN_GREEN, HIGH);
+  if (PIN_BUZZER >= 0) digitalWrite(PIN_BUZZER, HIGH);
+  delay(200);
+  if (PIN_BUZZER >= 0) digitalWrite(PIN_BUZZER, LOW);
+
   if (OPTIONAL_OLED && PIN_SDA >= 0 && PIN_SCL >= 0) {
     oled = new Adafruit_SSD1306(128, 64, &Wire, -1);
     oledReady = oled ? oled->begin(SSD1306_SWITCHCAPVCC, 0x3C) : false;
-    Serial.printf("[BOOT] 5b OLED ready=%s\n", oledReady?"true":"false");
-  } else {
-    Serial.println("[BOOT] 5b OLED SKIPPED (disabled)");
+    Serial.printf("[BOOT] OLED ready=%s\n", oledReady ? "true" : "false");
   }
 }
 
@@ -38,7 +42,7 @@ void displayTick(const SensorData& data, const coldchain::Output& output, bool b
     set(PIN_GREEN, true);
     set(PIN_YELLOW, false);
     set(PIN_RED, true);
-    set(PIN_BUZZER, (now % 500 < 250)); // Continuous warning alarm tone
+    set(PIN_BUZZER, (now % 500 < 250)); // Warning alarm tone
   } else if (isWarning) {
     set(PIN_GREEN, (now % 1000 < 500)); // Blinking status LED on warning/door open
     set(PIN_YELLOW, true);

@@ -32,12 +32,11 @@ static void pinOff(int pin) {
 }
 
 void coolingBegin() {
-  Serial.printf("[BOOT] 6a PRIMARY=%d BACKUP=%d FAN=%d\n", PIN_PRIMARY, PIN_BACKUP, PIN_FAN);
   pinOff(PIN_PRIMARY);
   pinOff(PIN_BACKUP);
   if (PIN_FAN >= 0) {
     pinOff(PIN_FAN);
-    Serial.printf("[BOOT] 6a fan pin %d off OK\n", PIN_FAN);
+    Serial.printf("[BOOT] Fan GPIO%d OFF\n", PIN_FAN);
   }
   primary = backup = false;
   offAt = millis();

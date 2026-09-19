@@ -234,15 +234,60 @@ function chartCard(field,label,unit,range=false){
 function kpis(){
   const t=cache.latest?.telemetry?.payload||{};
   const isHardware = appMode === 'HARDWARE';
-  return `<div class="kpis">${[
+  const list = [
     ['Chamber temperature',t.chamber_temp_c,'°C','DS18B20 / chamber'],
-    ['Relative humidity',t.humidity_pct,'%','SHT31 / chamber'],
     ['Heatsink temperature',t.heatsink_temp_c,'°C','DS18B20 / hot side'],
-    ['Primary current',t.primary_current_a,'A','ACS712 / primary branch']
-  ].map(([l,v,u,f])=>{
-    const hasValue = Number.isFinite(v);
-    const valueDisplay = hasValue ? `${fmt(v)}<small>${u}</small>` : '—';
-    const footerText = hasValue ? `<span class="status-dot"></span>${f}` : (isHardware ? `△ Pending hardware sensor (${f.split('/')[0].trim()})` : `△ Simulated sensor unavailable`);
+    ['Ambient temperature',t.sht31_temp_c,'°C','SHT31 / ambient secondary'],
+    ['Relative humidity',t.humidity_pct,'%','SHT31 / humidity'],
+    ['Primary current',t.primary_current_a,'A','ACS712 / primary branch'],
+    ['Door state',t.door_open,'','Reed switch / GPIO7'],
+    ['GPS location',t.gps,'','NEO-6M / UART1'],
+    ['Vibration',t.vibration_detected,'','LM393 / GPIO11']
+  ];
+  return `<div class="kpis">${list.map(([l,v,u,f])=>{
+    let valueDisplay = '—';
+    let footerText = '';
+    if(l==='Primary current'){
+      if(Number.isFinite(v)){
+        valueDisplay=`${fmt(v)}<small>${u}</small>`;
+        footerText=`<span class="status-dot"></span>${f}`;
+      } else if(isHardware){
+        valueDisplay=`<span class="pending-badge">Waiting for calibration</span>`;
+        footerText=`ACS712 · Pending calibration (not failure)`;
+      } else {
+        valueDisplay='—';
+        footerText=`△ Simulated sensor unavailable`;
+      }
+    } else if(l==='Door state'){
+      if(v==null){
+        valueDisplay='—';
+        footerText=`△ Door state unavailable`;
+      } else {
+        valueDisplay=v?`OPEN ${t.door_open_s?`<small>${fmt(t.door_open_s,0)}s</small>`:''}`:'CLOSED';
+        footerText=`<span class="status-dot"></span>${f} · ${v?'Open duration':'Secure'}`;
+      }
+    } else if(l==='GPS location'){
+      const g=v||{};
+      if(g.fix){
+        valueDisplay=`FIX <small>${g.satellites||0} sats</small>`;
+        footerText=`<span class="status-dot"></span>${fmt(g.latitude,3)}, ${fmt(g.longitude,3)}`;
+      } else {
+        valueDisplay=`NO FIX <small>${g.satellites||0} sats</small>`;
+        footerText=`Indoor test · No satellite lock (normal)`;
+      }
+    } else if(l==='Vibration'){
+      if(v===true){
+        valueDisplay=`<span style="color:#b23b2b">DETECTED</span>`;
+        footerText=`△ Shock or vibration detected`;
+      } else {
+        valueDisplay=`NORMAL`;
+        footerText=`<span class="status-dot"></span>No shock detected`;
+      }
+    } else {
+      const hasValue = Number.isFinite(v);
+      valueDisplay = hasValue ? `${fmt(v)}<small>${u}</small>` : '—';
+      footerText = hasValue ? `<span class="status-dot"></span>${f}` : (isHardware ? `△ Pending hardware sensor (${f.split('/')[0].trim()})` : `△ Simulated sensor unavailable`);
+    }
     return `<section class="card"><div class="kpi-label">${l}<span>↗</span></div><div class="kpi-value">${valueDisplay}</div><div class="kpi-foot">${footerText}</div></section>`;
   }).join('')}</div>`;
 }
@@ -260,6 +305,13 @@ function control(){
         : (d.reason || 'ESP32 edge safety loop authoritative'))
     : (d.reason || 'Simulated closed-loop control');
 
+  const primaryCoolingText = isHardware ? 'NOT COMMISSIONED (Pending Peltier stage)' : (t.primary_cooling === undefined ? 'UNAVAILABLE' : t.primary_cooling ? 'ON' : 'OFF');
+  const backupCoolingText = isHardware ? 'NOT COMMISSIONED (Pending Peltier stage)' : (t.backup_cooling === undefined ? 'UNAVAILABLE' : t.backup_cooling ? 'ON' : 'OFF');
+  const doorText = t.door_open == null ? 'UNAVAILABLE' : (t.door_open ? ('OPEN (' + fmt(t.door_open_s, 0) + 's)') : 'CLOSED');
+  const gpsText = t?.gps?.fix
+    ? ('FIX (' + (t.gps.satellites || 0) + ' sats · ' + fmt(t.gps.latitude, 4) + ', ' + fmt(t.gps.longitude, 4) + ')')
+    : ('NO FIX (' + (t?.gps?.satellites || 0) + ' satellites)');
+
   return `<section class="card">
     <div class="card-head">
       <div>
@@ -273,9 +325,10 @@ function control(){
       <div class="big-state">${esc(authoritativeState.replaceAll('_',' '))}</div>
       <p>${esc(advisoryNote)}</p>
     </div>
-    ${row('Primary output observed', t.primary_cooling === undefined ? 'UNAVAILABLE' : t.primary_cooling ? 'ON' : 'OFF')}
-    ${row('Backup output observed', t.backup_cooling === undefined ? 'UNAVAILABLE' : t.backup_cooling ? 'ON' : 'OFF')}
-    ${row('Door (Reed switch)', t.door_open == null ? 'UNAVAILABLE' : t.door_open ? 'OPEN' : 'CLOSED')}
+    ${row('Primary cooling', primaryCoolingText)}
+    ${row('Backup cooling', backupCoolingText)}
+    ${row('Door (Reed switch)', doorText)}
+    ${row('GPS status', gpsText)}
     ${row('Edge-reported state', edgeState)}
     ${row('Cloud advisory analysis', (d.state || 'NORMAL').replaceAll('_',' '))}
     ${row('Control authority', isHardware ? 'ESP32 local safety loop (Hardware)' : 'Simulated local loop')}
@@ -442,7 +495,7 @@ function render(){
 
   let html='';
   if(page==='overview')html=kpis()+`<div class="two-col">${chartCard('chamber_temp_c','Chamber thermal trend','°C',true)}${control()}</div>`+risks()+`<div class="two-col equal">${timeline(5)}${map()}</div>`;
-  if(page==='live')html=kpis()+`<div class="two-col equal">${chartCard('chamber_temp_c','Chamber temperature','°C',true)}${chartCard('heatsink_temp_c','Heatsink temperature','°C')}${chartCard('humidity_pct','Humidity','%')}${chartCard('primary_current_a','Primary current','A')}</div>`;
+  if(page==='live')html=kpis()+`<div class="two-col equal">${chartCard('chamber_temp_c','Chamber temperature (DS18B20)','°C',true)}${chartCard('heatsink_temp_c','Heatsink temperature (DS18B20)','°C')}${chartCard('sht31_temp_c','Ambient temperature (SHT31)','°C')}${chartCard('humidity_pct','Humidity (SHT31)','%')}${chartCard('primary_current_a','Primary current (ACS712)','A')}</div>`;
   if(page==='predictive')html=risks()+`<section class="card"><h2>Inference details</h2>${row('Model version',latest?.prediction?.model_version)}${row('Measured inference duration',fmt(latest?.prediction?.inference_ms,2)+' ms')}${row('Decision threshold',fmt(latest?.prediction?.threshold,3))}${row('Validation scope','Anomaly classification on active telemetry stream')}<p class="card-sub">ML risk can raise a warning. Confirmed primary faults require sensor evidence. Critical safety rules take precedence.</p></section>`;
   if(page==='healing')html=`<div class="two-col">${timeline(100)}${control()}</div>`+commandTable();
   if(page==='equipment')html=`<div class="equipment">${[['ESP32-S3','Edge controller','Acquisition and local control. Pin assignment awaits exact board.'],['DS18B20 × 2','Temperature probes','One chamber probe, one shared heatsink probe.'],['SHT31','Temperature & humidity','Secondary chamber temperature and humidity.'],['ACS712 20A × 1','Primary current only','Backup current requires an external meter.'],['Reed switch','Door monitoring','Door events are distinguished from cooling failures.'],['NEO-6M','GPS location','No-fix state uses null coordinates.'],['TEC1-12706','Primary cooling','Independently switched, fused primary branch.'],['TEC1-12701 / 12703','Backup cooling','Primary OFF confirmation precedes activation.'],['2-channel MOSFET','Cooling interlock','Both Peltiers must never be commanded ON together.'],['Shared heatsink + fan','Thermal assembly','Fan uses unswitched 12 V; shared overheating inhibits both Peltiers.'],['12 V / 15 A + 5 V','Separate supplies','Cooling supply and regulated controller USB supply.'],['Buzzer + 2–3 LEDs','Local indication','OLED and push buttons optional additions.']].map(([a,b,c])=>`<section class="card">${badge(appMode==='HARDWARE'?'HARDWARE MODE':'SIMULATION','neutral')}<h2>${esc(a)}</h2><h3>${esc(b)}</h3><p>${esc(c)}</p></section>`).join('')}</div>`;
@@ -450,7 +503,7 @@ function render(){
   if(page==='alerts')html=`<section class="card"><h2>Recorded faults</h2>${(cache.faults||[]).length?table(['Time','Mode','State','Reason','Source','Lifecycle'],cache.faults.map(e=>[clock(e.timestamp),e.payload.mode||'SYSTEM',e.payload.new_state,e.payload.reason,e.payload.source,e.payload.resolved?(e.payload.resolution||'RESOLVED'):'ACTIVE'])):'<div class="empty">No fault events recorded for this device.</div>'}</section>`;
   if(page==='history')html=`<section class="card"><div class="card-head"><h2>Telemetry history</h2><button id="download-history" class="secondary">Export JSON</button></div>${table(['Acquired','Sequence','Chamber °C','Current A','Observed state','Decision','Mode','Archived'],(cache.history||[]).map(r=>[clock(r.timestamp),r.sequence,fmt(r.payload.chamber_temp_c),fmt(r.payload.primary_current_a),r.payload.system_state,r.decision.state,r.mode,r.archived?'Yes':'No']))}</section>`;
   if(page==='analytics'){const m=system.model||{};html=`<section class="card"><div class="card-head"><h2>Held-out test results</h2>${badge(m.training_provenance||'UNAVAILABLE','warn')}</div>${table(['Estimator','Precision','Recall','F1','ROC AUC','Test samples'],Object.entries(m.test||{}).map(([name,v])=>[name,fmt(v.precision,3),fmt(v.recall,3),fmt(v.f1,3),fmt(v.roc_auc,3),v.samples]))}<p class="card-sub">${esc(m.split_method)}. Test evaluation on held-out datasets.</p></section><div class="three-col">${Object.entries(m.test||{}).map(([n,v])=>`<section class="card"><h2>${esc(n)} confusion matrix</h2>${table(['Actual / Predicted','Normal','Anomaly'],[['Normal',...v.confusion_matrix[0]],['Anomaly',...v.confusion_matrix[1]]])}</section>`).join('')}</div>`;}
-  if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health reported by source</h2>${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k,v?'VALID':'INVALID')).join('')}${row('GPS',t?.gps.fix?'FIX':'NO FIX')}</section></div>`;
+  if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health reported by source</h2>${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'current (ACS712)' : k, k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'PENDING CALIBRATION' : (v?'VALID':'INVALID'))).join('')}${row('GPS',t?.gps?.fix?'FIX':'NO FIX')}${t?.vibration_detected !== undefined ? row('Vibration', t.vibration_detected ? 'DETECTED' : 'NORMAL') : ''}</section></div>`;
   if(page==='validation')html=`<section class="card"><div class="card-head"><div><h2>Physical measurement register</h2><p class="card-sub">Values stay empty until hardware evidence is submitted.</p></div><button id="export-validation" class="secondary">Export CSV</button></div>${table(['Measurement','Value','Status','Evidence source'],(cache.validation?.metrics||[]).map(m=>[m.metric,m.value??'—',m.status,m.measurement_source]))}</section>`;
   if(page==='archive')html=archiveView();
   

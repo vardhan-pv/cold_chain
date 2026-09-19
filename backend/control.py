@@ -104,7 +104,7 @@ class Controller:
         elif (not t.primary_cooling and t.primary_current_a is not None and t.primary_current_a > L.off_current_max_a and
               (self.off_transition_at is None or now-self.off_transition_at >= 0.5)):
             critical = 'Primary draws current while commanded OFF; backup inhibited'
-        elif (t.chamber_temp_c is not None and t.chamber_temp_c >= L.critical_c and
+        elif (not has_pending_sensors and t.chamber_temp_c is not None and t.chamber_temp_c >= L.critical_c and
               (self.cooled_once or now-self.started >= L.initial_cooldown_s)):
             critical = 'Chamber exceeded the configured demonstration critical limit'
 

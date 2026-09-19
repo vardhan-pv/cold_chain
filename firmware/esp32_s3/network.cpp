@@ -59,36 +59,29 @@ static void acknowledgeLocalDecision(){
 static std::atomic<bool> clockSynchronized{false};
 
 static void syncNTP() {
-  Serial.println("[BOOT] 8 NTP start");
-  Serial.println("[NTP] Starting synchronization...");
+  Serial.println("[BOOT] NTP starting...");
   configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
   for (int attempt = 1; attempt <= 30; attempt++) {
     time_t now = time(nullptr);
-    Serial.printf("[NTP] Attempt %d epoch=%ld\n", attempt, (long)now);
     if (now > 1700000000) {
       clockSynchronized = true;
-      Serial.println("[NTP] CLOCK SYNCHRONIZED");
-      Serial.println("[BOOT] 8 NTP OK");
+      Serial.println("[BOOT] NTP OK");
       return;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
-  Serial.println("[NTP] Synchronization failed");
+  Serial.println("[BOOT] NTP timeout");
 }
 
 static void worker(void*){
-  Serial.println("[BOOT] 7 network worker running");
-  
   if (strlen(WIFI_SSID) == 0) {
-    Serial.println("[WiFi] no SSID");
+    Serial.println("[BOOT] WiFi no SSID configured");
   } else {
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
     WiFi.persistent(false);
-    
-    Serial.println("[WiFi] begin");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.println("[WiFi] connecting...");
+    Serial.println("[BOOT] WiFi connecting...");
   }
   
   uint32_t connectStartedAt = millis();
@@ -181,8 +174,9 @@ static void worker(void*){
     if (configured && strlen(DEVICE_TOKEN)) {
       http.setConnectTimeout(2500); http.setTimeout(2500);
       http.addHeader("Content-Type", "application/json"); http.addHeader("X-Device-Token", DEVICE_TOKEN);
+      Serial.printf("Sending telemetry to %s...\n", BACKEND_URL);
       status_code = http.POST(reinterpret_cast<uint8_t*>(packet.json), strlen(packet.json));
-      Serial.printf("HTTP %d\n", status_code);
+      Serial.printf("HTTP Response Code: %d\n", status_code);
       if (status_code >= 200 && status_code < 300) {
         JsonDocument response;
         if (!deserializeJson(response, http.getString()) && !response["archived"].as<bool>() &&
@@ -205,16 +199,10 @@ static void worker(void*){
   }
 }
 void networkBegin(){
-  Serial.println("[BOOT] 7a generating boot ID");
   snprintf(bootID,sizeof(bootID),"%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random());
-  Serial.printf("[BOOT] 7a boot_id=%s\n", bootID);
-  Serial.println("[BOOT] 7b creating queue");
   queue=xQueueCreate(8,sizeof(Packet));
-  Serial.printf("[BOOT] 7b queue=%s\n", queue?"OK":"FAILED");
   if(queue){
-    Serial.println("[BOOT] 7c creating worker task");
-    BaseType_t taskOK = xTaskCreatePinnedToCore(worker,"telemetry",16384,nullptr,1,nullptr,0);
-    Serial.printf("[BOOT] 7c worker task=%s\n", taskOK==pdPASS?"OK":"FAILED");
+    xTaskCreatePinnedToCore(worker,"telemetry",16384,nullptr,1,nullptr,0);
   }
 }
 void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,const char* injection){
@@ -242,8 +230,29 @@ void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,
   if(measureJson(j)>=sizeof(packet.json)){dropped++;return;}
   serializeJson(j,packet.json,sizeof(packet.json));
   if(xQueueSend(queue,&packet,0)!=pdTRUE){Packet old;xQueueReceive(queue,&old,0);dropped++;xQueueSend(queue,&packet,0);}
-  Serial.printf("{\"event\":\"sample\",\"sequence\":%lu,\"state\":\"%s\",\"dropped\":%lu}\n",
-      (unsigned long)sequence,coldchain::name(o.state),(unsigned long)dropped);
+
+  char chStr[16], hsStr[16], shtStr[16], humStr[16], curStr[24], doorStr[24], gpsStr[16];
+  if (s.chamberOK) snprintf(chStr, sizeof(chStr), "%.2f C", s.chamber); else snprintf(chStr, sizeof(chStr), "null");
+  if (s.heatsinkOK) snprintf(hsStr, sizeof(hsStr), "%.2f C", s.heatsink); else snprintf(hsStr, sizeof(hsStr), "null");
+  if (s.shtOK) {
+    snprintf(shtStr, sizeof(shtStr), "%.2f C", s.shtTemp);
+    snprintf(humStr, sizeof(humStr), "%.1f %%", s.humidity);
+  } else {
+    snprintf(shtStr, sizeof(shtStr), "null");
+    snprintf(humStr, sizeof(humStr), "null");
+  }
+  if (s.currentOK) snprintf(curStr, sizeof(curStr), "%.2f A", s.current); else snprintf(curStr, sizeof(curStr), "UNCALIBRATED");
+  if (s.doorOK) {
+    if (s.doorOpen) snprintf(doorStr, sizeof(doorStr), "OPEN (%.1fs)", s.doorSeconds);
+    else snprintf(doorStr, sizeof(doorStr), "CLOSED");
+  } else {
+    snprintf(doorStr, sizeof(doorStr), "UNKNOWN");
+  }
+  snprintf(gpsStr, sizeof(gpsStr), s.gpsFix ? "FIX" : "NO_FIX");
+
+  Serial.printf("[SAMPLE] seq=%lu chamber=%s heatsink=%s sht31=%s humidity=%s door=%s vib=%s gps=%s sats=%lu current=%s\n",
+                (unsigned long)sequence, chStr, hsStr, shtStr, humStr, doorStr,
+                s.vibrationDetected ? "DETECTED" : "NORMAL", gpsStr, (unsigned long)s.satellites, curStr);
 }
 bool networkHealthy(){return lastSuccess>0&&millis()-lastSuccess<20000;}
 float networkAdvisoryRisk(){return riskAt>0&&millis()-riskAt<20000?advisoryRisk.load():NAN;}
