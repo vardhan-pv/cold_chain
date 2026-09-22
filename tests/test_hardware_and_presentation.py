@@ -21,7 +21,7 @@ def hw_app(tmp_path):
 
 def make_hw_telemetry(device_id='CCU-HW-TEST', sequence=1, system_state='NORMAL',
                       chamber_ok=False, chamber_temp=None, heatsink_ok=False, heatsink_temp=None,
-                      current_ok=False, current_val=None, sht_ok=False, door_open=False):
+                      current_ok=False, current_val=None, sht_ok=False, sht_temp=28.0, humidity=55.0, door_open=False):
     return Telemetry(
         schema_version='1.0',
         device_id=device_id,
@@ -32,8 +32,8 @@ def make_hw_telemetry(device_id='CCU-HW-TEST', sequence=1, system_state='NORMAL'
         mode='HARDWARE',
         chamber_temp_c=chamber_temp,
         heatsink_temp_c=heatsink_temp,
-        sht31_temp_c=None,
-        humidity_pct=None,
+        sht31_temp_c=sht_temp if sht_ok else None,
+        humidity_pct=humidity if sht_ok else None,
         primary_current_a=current_val,
         door_open=door_open,
         door_open_s=0,
@@ -307,4 +307,127 @@ def test_gps_indoor_no_fix_with_satellites(hw_app):
     res = client.post('/api/v1/telemetry', json=t.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
     assert res.status_code == 200
     assert res.json()['decision']['state'] == 'NORMAL'
+
+
+def test_hardware_primary_cooling_commissioned_and_telemetry_reporting(hw_app):
+    """Regression: Primary cooling is commissioned; telemetry reflects real physical ON/OFF states."""
+    app, client, hw_token, _ = hw_app
+
+    # Test Primary Cooling OFF state
+    t_off = make_hw_telemetry(
+        sequence=1, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.5,
+        heatsink_ok=True, heatsink_temp=28.2,
+        current_ok=False, current_val=None,
+        sht_ok=True, door_open=False
+    )
+    t_off.primary_cooling = False
+    t_off.backup_cooling = False
+    res_off = client.post('/api/v1/telemetry', json=t_off.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_off.status_code == 200
+    latest_off = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    payload_off = latest_off['telemetry']['payload']
+    assert payload_off['primary_cooling'] is False
+    assert payload_off['backup_cooling'] is False
+    assert payload_off['primary_current_a'] is None
+    assert payload_off['sensor_health']['current'] is False
+    assert latest_off['telemetry']['decision']['state'] == 'NORMAL'
+    assert latest_off['telemetry']['decision']['authority'] == 'ESP32_EDGE_LOOP'
+
+    # Test Primary Cooling ON state (e.g. during safe test or active chilling)
+    t_on = make_hw_telemetry(
+        sequence=2, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=27.9,
+        heatsink_ok=True, heatsink_temp=29.1,
+        current_ok=False, current_val=None,
+        sht_ok=True, door_open=False
+    )
+    t_on.primary_cooling = True
+    t_on.backup_cooling = False
+    res_on = client.post('/api/v1/telemetry', json=t_on.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_on.status_code == 200
+    latest_on = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    payload_on = latest_on['telemetry']['payload']
+    assert payload_on['primary_cooling'] is True
+    assert payload_on['backup_cooling'] is False
+    assert payload_on['primary_current_a'] is None
+    assert latest_on['telemetry']['decision']['authority'] == 'ESP32_EDGE_LOOP'
+
+
+def test_uncalibrated_current_does_not_trip_hardware_cooling_failure(hw_app):
+    """Regression: Current pending calibration is not a hardware fault; edge authority preserved."""
+    app, client, hw_token, _ = hw_app
+    t = make_hw_telemetry(
+        sequence=1, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=25.0,
+        heatsink_ok=True, heatsink_temp=26.0,
+        current_ok=False, current_val=None
+    )
+    res = client.post('/api/v1/telemetry', json=t.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res.status_code == 200
+    decision = res.json()['decision']
+    assert decision['state'] == 'NORMAL'
+    assert decision['advisory_status'] == 'HARDWARE_PENDING_SENSORS'
+    assert decision['authority'] == 'ESP32_EDGE_LOOP'
+
+
+def test_thermal_protection_heatsink_overtemp_triggers_critical_failure(hw_app):
+    """Regression: Heatsink overtemperature (>=65C limit) triggers CRITICAL_FAILURE."""
+    app, client, hw_token, _ = hw_app
+    t = make_hw_telemetry(
+        sequence=1, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=10.0,
+        heatsink_ok=True, heatsink_temp=66.5,
+        current_ok=False, current_val=None
+    )
+    res = client.post('/api/v1/telemetry', json=t.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res.status_code == 200
+    decision = res.json()['decision']
+    assert decision['state'] == 'CRITICAL_FAILURE'
+    assert 'heatsink overtemperature' in decision['reason'].lower()
+
+
+def test_commissioned_sensor_loss_triggers_critical_failure(hw_app):
+    """Regression: Loss of chamber or heatsink sensor once commissioned trips CRITICAL_FAILURE."""
+    app, client, hw_token, _ = hw_app
+    # First establish good chamber & heatsink readings
+    t1 = make_hw_telemetry(
+        sequence=1, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=8.0,
+        heatsink_ok=True, heatsink_temp=30.0,
+        current_ok=False, current_val=None
+    )
+    res1 = client.post('/api/v1/telemetry', json=t1.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res1.status_code == 200
+    assert res1.json()['decision']['state'] == 'NORMAL'
+
+    # Now chamber sensor drops out
+    t2 = make_hw_telemetry(
+        sequence=2, system_state='NORMAL',
+        chamber_ok=False, chamber_temp=None,
+        heatsink_ok=True, heatsink_temp=30.0,
+        current_ok=False, current_val=None
+    )
+    res2 = client.post('/api/v1/telemetry', json=t2.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res2.status_code == 200
+    decision = res2.json()['decision']
+    assert decision['state'] == 'CRITICAL_FAILURE'
+    assert 'chamber' in decision['reason'].lower()
+
+
+def test_dashboard_code_does_not_label_primary_cooling_not_commissioned():
+    """Regression: Dashboard source code renders dynamic OFF/ON for primary cooling and preserves NOT COMMISSIONED for backup."""
+    from pathlib import Path
+    app_js_path = Path(__file__).resolve().parents[1] / 'dashboard' / 'src' / 'app.js'
+    content = app_js_path.read_text(encoding='utf-8')
+
+    # Primary cooling must NOT be hardcoded to NOT COMMISSIONED
+    assert "isHardware ? 'NOT COMMISSIONED" not in content.split("primaryCoolingText")[1].split(";")[0], \
+        "primaryCoolingText should not be hardcoded to NOT COMMISSIONED in hardware mode"
+
+    # Backup cooling must remain NOT COMMISSIONED in hardware mode
+    assert "backupCoolingText = isHardware ? 'NOT COMMISSIONED'" in content
+
+    # Primary current must display 'Waiting for calibration' when uncalibrated in hardware mode
+    assert "Waiting for calibration" in content
 

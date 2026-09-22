@@ -305,8 +305,8 @@ function control(){
         : (d.reason || 'ESP32 edge safety loop authoritative'))
     : (d.reason || 'Simulated closed-loop control');
 
-  const primaryCoolingText = isHardware ? 'NOT COMMISSIONED (Pending Peltier stage)' : (t.primary_cooling === undefined ? 'UNAVAILABLE' : t.primary_cooling ? 'ON' : 'OFF');
-  const backupCoolingText = isHardware ? 'NOT COMMISSIONED (Pending Peltier stage)' : (t.backup_cooling === undefined ? 'UNAVAILABLE' : t.backup_cooling ? 'ON' : 'OFF');
+  const primaryCoolingText = t.primary_cooling === undefined ? 'UNAVAILABLE' : (t.primary_cooling ? 'ON' : 'OFF');
+  const backupCoolingText = isHardware ? 'NOT COMMISSIONED' : (t.backup_cooling === undefined ? 'UNAVAILABLE' : t.backup_cooling ? 'ON' : 'OFF');
   const doorText = t.door_open == null ? 'UNAVAILABLE' : (t.door_open ? ('OPEN (' + fmt(t.door_open_s, 0) + 's)') : 'CLOSED');
   const gpsText = t?.gps?.fix
     ? ('FIX (' + (t.gps.satellites || 0) + ' sats · ' + fmt(t.gps.latitude, 4) + ', ' + fmt(t.gps.longitude, 4) + ')')

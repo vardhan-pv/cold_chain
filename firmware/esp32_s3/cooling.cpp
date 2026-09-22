@@ -5,23 +5,28 @@
 static std::atomic<bool> primary{false}, backup{false};
 static uint32_t offAt = 0;
 
-bool coolingConfigured() {
-  if (!(COMMISSIONED && CURRENT_CALIBRATED && PIN_PRIMARY >= 0 && PIN_BACKUP >= 0 && PIN_ONEWIRE >= 0 && PIN_CURRENT >= 0 && PIN_REED >= 0 &&
-        CURRENT_MV_PER_AMP > 0 && CHAMBER_ROM[0] != 0 && HEATSINK_ROM[0] != 0)) {
+bool primaryCoolingConfigured() {
+  if (!(COMMISSIONED && PIN_PRIMARY >= 0 && PIN_ONEWIRE >= 0 && CHAMBER_ROM[0] != 0)) {
     return false;
   }
-  const int pins[] = {PIN_PRIMARY, PIN_BACKUP, PIN_ONEWIRE, PIN_CURRENT, PIN_REED, PIN_SDA, PIN_SCL, PIN_GPS_RX, PIN_GPS_TX,
-                      PIN_GREEN, PIN_YELLOW, PIN_RED, PIN_BUZZER};
+  const int pins[] = {PIN_PRIMARY, PIN_BACKUP, PIN_ONEWIRE, PIN_CURRENT, PIN_REED, PIN_SDA, PIN_SCL,
+                      PIN_FAN, PIN_VIBRATION, PIN_BUZZER, PIN_GPS_RX, PIN_GPS_TX,
+                      PIN_GREEN, PIN_YELLOW, PIN_RED, PIN_INJECT_PRIMARY};
   for (unsigned i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
     for (unsigned j = i + 1; j < sizeof(pins) / sizeof(pins[0]); j++) {
       if (pins[i] >= 0 && pins[i] == pins[j]) return false;
     }
   }
-  bool different = false;
-  for (unsigned i = 0; i < 8; i++) {
-    if (CHAMBER_ROM[i] != HEATSINK_ROM[i]) different = true;
-  }
-  return different;
+  return true;
+}
+
+bool backupCoolingConfigured() {
+  // Backup Peltier is NOT commissioned yet
+  return false;
+}
+
+bool coolingConfigured() {
+  return primaryCoolingConfigured();
 }
 
 static void pinOff(int pin) {
@@ -29,6 +34,32 @@ static void pinOff(int pin) {
     digitalWrite(pin, OUTPUT_INACTIVE);
     pinMode(pin, OUTPUT);
   }
+}
+
+void primaryCoolingOff() {
+  if (PIN_PRIMARY >= 0) digitalWrite(PIN_PRIMARY, OUTPUT_INACTIVE);
+  if (PIN_FAN >= 0) digitalWrite(PIN_FAN, OUTPUT_INACTIVE);
+  if (primary) {
+    primary = false;
+    offAt = millis();
+    Serial.println("{\"event\":\"cooling_output\",\"channel\":\"PRIMARY\",\"state\":\"OFF\"}");
+  }
+}
+
+void primaryCoolingOn() {
+  if (!primaryCoolingConfigured() || backup) return;
+  if (millis() - offAt < 2000) return; // Anti-chatter deadband
+  if (PIN_FAN >= 0) digitalWrite(PIN_FAN, OUTPUT_ACTIVE);
+  if (PIN_PRIMARY >= 0) digitalWrite(PIN_PRIMARY, OUTPUT_ACTIVE);
+  if (!primary) {
+    primary = true;
+    Serial.println("{\"event\":\"cooling_output\",\"channel\":\"PRIMARY\",\"state\":\"ON\"}");
+  }
+}
+
+void setPrimaryCooling(bool on) {
+  if (on) primaryCoolingOn();
+  else primaryCoolingOff();
 }
 
 void coolingBegin() {
@@ -40,35 +71,34 @@ void coolingBegin() {
   }
   primary = backup = false;
   offAt = millis();
+  Serial.printf("[BOOT] Primary Peltier GPIO%d configured (defaults OFF, commissioned=%s)\n",
+                PIN_PRIMARY, primaryCoolingConfigured() ? "true" : "false");
 }
 
 void coolingApply(coldchain::Output command, uint32_t now) {
-  if (!coolingConfigured() || (command.primary && command.backup)) {
+  // Backup is not commissioned
+  command.backup = false;
+
+  if (!primaryCoolingConfigured() || (command.primary && command.backup)) {
     command.primary = false;
     command.backup = false;
   }
-  bool switching = (primary && command.backup) || (backup && command.primary);
+
   if (primary && !command.primary) {
-    if (PIN_PRIMARY >= 0) digitalWrite(PIN_PRIMARY, OUTPUT_INACTIVE);
-    primary = false;
-    offAt = now;
+    primaryCoolingOff();
   }
+
   if (backup && !command.backup) {
     if (PIN_BACKUP >= 0) digitalWrite(PIN_BACKUP, OUTPUT_INACTIVE);
     backup = false;
     offAt = now;
   }
-  if (switching) return;
+
   if (command.primary && !backup && now - offAt >= 2000) {
-    if (PIN_PRIMARY >= 0) digitalWrite(PIN_PRIMARY, OUTPUT_ACTIVE);
-    primary = true;
-  }
-  if (command.backup && !primary && now - offAt >= 2000) {
-    if (PIN_BACKUP >= 0) digitalWrite(PIN_BACKUP, OUTPUT_ACTIVE);
-    backup = true;
+    primaryCoolingOn();
   }
 }
 
-// These booleans confirm output register intent, not MOSFET conduction. ACS712 is independent primary evidence.
+// These booleans confirm output register intent, not MOSFET conduction.
 bool primaryObserved() { return primary; }
 bool backupObserved() { return backup; }

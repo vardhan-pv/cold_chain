@@ -19,6 +19,7 @@ struct Reading {
   bool criticalValid=false, secondaryValid=false, doorValid=false, doorOpen=false;
   bool primaryObserved=false, backupObserved=false;
   bool injectPrimary=false, injectBackup=false;
+  bool currentCalibrated=true;
 };
 struct Output { bool primary=false, backup=false, alarm=false; State state=State::NORMAL; };
 class Controller {
@@ -32,18 +33,18 @@ class Controller {
     if(r.criticalValid&&r.chamber<=8)cooledOnce=true;
     if(previousPrimary&&!r.primaryObserved){offSettling=true;offTransition=ms;}
     previousPrimary=r.primaryObserved;
-    const bool unexpectedCurrent=!r.primaryObserved&&r.current>.5&&(!offSettling||elapsed(ms,offTransition)>=500);
+    const bool unexpectedCurrent=r.currentCalibrated&&!r.primaryObserved&&r.current>.5&&(!offSettling||elapsed(ms,offTransition)>=500);
+    const bool currentFault=r.currentCalibrated&&(!isfinite(r.current)||r.current>=7||unexpectedCurrent);
     const bool chamberCritical=r.chamber>=18&&(cooledOnce||elapsed(ms,startAt)>=600000);
     const bool latched=output.state==State::CRITICAL_FAILURE || output.state==State::REROUTING;
-    if ((!r.criticalValid || !isfinite(r.chamber) || !isfinite(r.heatsink) || !isfinite(r.current) ||
-         r.heatsink>=65 || r.current>=7 || chamberCritical || (r.primaryObserved&&r.backupObserved) ||
-         unexpectedCurrent) && !latched) {
+    if ((!r.criticalValid || !isfinite(r.chamber) || !isfinite(r.heatsink) || currentFault ||
+         r.heatsink>=65 || chamberCritical || (r.primaryObserved&&r.backupObserved)) && !latched) {
       change(State::CRITICAL_FAILURE,ms,"Critical sensor or electrical/thermal safety fault");
     } else if(output.state==State::CRITICAL_FAILURE) {
       change(State::REROUTING,ms,"Cooling latched OFF; logistics assistance required");
     } else if(output.state!=State::REROUTING) {
       if(r.primaryObserved) { if(!onTracking) {onTracking=true;onAt=ms;} } else onTracking=false;
-      bool bad=(r.primaryObserved&&onTracking&&elapsed(ms,onAt)>=10000&&r.current<.3) ||
+      bool bad=(r.currentCalibrated&&r.primaryObserved&&onTracking&&elapsed(ms,onAt)>=10000&&r.current<.3) ||
         (r.primaryObserved&&r.doorValid&&!r.doorOpen&&r.chamber>10&&r.rate>.15) || r.injectPrimary;
       if(bad) { if(!badTracking) {badTracking=true;badAt=ms;} } else badTracking=false;
       switch(output.state) {
@@ -56,7 +57,7 @@ class Controller {
           } else if(output.state!=State::NORMAL)change(State::NORMAL,ms,"Warning cleared");
           break;
         case State::PRIMARY_FAULT:
-          if(!r.primaryObserved&&r.current<=.5) {
+          if(!r.primaryObserved&&(!r.currentCalibrated||r.current<=.5)) {
             if(!offTracking) {offTracking=true;offAt=ms;}
             if(elapsed(ms,offAt)>=2000) {
               change(State::BACKUP_ACTIVE,ms,"Primary OFF evidence and dead time satisfied");
