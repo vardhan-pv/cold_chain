@@ -231,9 +231,21 @@ function chartCard(field,label,unit,range=false){
   return `<section class="card"><div class="card-head"><div><h2>${esc(label)}</h2><p class="card-sub">Latest 80 valid samples · ${esc(unit)}</p></div>${badge('RECORDED','neutral')}</div>${chart(field,label,unit,range)}<div class="legend"><span>${esc(label)}</span>${range?'<span>Demonstration band 5–8 °C</span>':''}</div></section>`;
 }
 
+function isLiveHardwareFresh(){
+  if(appMode!=='HARDWARE')return true;
+  const latest=cache.latest;
+  if(!latest||!latest.telemetry)return false;
+  if(latest.online===false||latest.connectivity==='STALE'||latest.connectivity==='NO_DATA')return false;
+  const sec=latest.seconds_since_received;
+  return Number.isFinite(sec)&&sec<=15;
+}
+
 function kpis(){
-  const t=cache.latest?.telemetry?.payload||{};
+  const latest=cache.latest;
+  const t=latest?.telemetry?.payload||{};
   const isHardware = appMode === 'HARDWARE';
+  const isFresh = !isHardware || isLiveHardwareFresh();
+
   const list = [
     ['Chamber temperature',t.chamber_temp_c,'°C','DS18B20 / chamber'],
     ['Heatsink temperature',t.heatsink_temp_c,'°C','DS18B20 / hot side'],
@@ -247,14 +259,14 @@ function kpis(){
   return `<div class="kpis">${list.map(([l,v,u,f])=>{
     let valueDisplay = '—';
     let footerText = '';
-    if(l==='Primary current'){
+
+    if(!isFresh){
+      valueDisplay = '—';
+      footerText = `△ Hardware offline · No live telemetry`;
+    } else if(l==='Primary current'){
       if(Number.isFinite(v)){
         valueDisplay=`${fmt(v,2)}<small>${u}</small>`;
-        if(isHardware && (t.current_source === 'EMULATED' || !t.sensor_health?.current)){
-          footerText=`<span class="badge neutral" style="font-size:10px;padding:1px 5px;margin-right:4px;">EMULATED</span> ACS712 calibration: PENDING`;
-        } else {
-          footerText=`<span class="status-dot"></span>${f}`;
-        }
+        footerText=`<span class="status-dot"></span>${f}`;
       } else if(isHardware){
         valueDisplay=`<span class="pending-badge">Waiting for calibration</span>`;
         footerText=`ACS712 · Pending calibration (not failure)`;
@@ -301,6 +313,36 @@ function row(label,val){return `<div class="status-row"><span>${esc(label)}</spa
 function control(){
   const latest=cache.latest,t=latest?.telemetry?.payload||{},d=latest?.telemetry?.decision||{};
   const isHardware = (t.mode || appMode) === 'HARDWARE';
+  const isFresh = !isHardware || isLiveHardwareFresh();
+
+  if (isHardware && !isFresh) {
+    const ageSec = latest?.seconds_since_received;
+    const ageStr = Number.isFinite(ageSec) ? `${fmt(ageSec, 1)}s ago` : 'No recent telemetry';
+    return `<section class="card">
+      <div class="card-head">
+        <div>
+          <h2>Current System State</h2>
+          <p class="card-sub">ESP32-S3 edge connection lost</p>
+        </div>
+        ${badge('HARDWARE · OFFLINE', 'danger')}
+      </div>
+      <div class="state-panel">
+        <p>AUTHORITATIVE CURRENT STATE</p>
+        <div class="big-state" style="color:var(--danger,#b23b2b)">OFFLINE</div>
+        <p>ESP32 HARDWARE OFFLINE · No recent telemetry received (${esc(ageStr)})</p>
+      </div>
+      ${row('Primary cooling', 'UNKNOWN / NO LIVE DATA')}
+      ${row('Backup cooling', 'NOT COMMISSIONED')}
+      ${row('Door (Reed switch)', '—')}
+      ${row('GPS status', '—')}
+      ${row('Edge-reported state', 'OFFLINE')}
+      ${row('Cloud advisory analysis', 'OFFLINE')}
+      ${row('Control authority', 'ESP32 local safety loop (Hardware offline)')}
+      <div class="state-steps"><span class=""></span><span class=""></span><span class=""></span><span class=""></span></div>
+      <p class="card-sub">Telemetry connection timeout (> 15 seconds). Hardware status cannot be confirmed live.</p>
+    </section>`;
+  }
+
   const edgeState = t.system_state || 'NORMAL';
   const authoritativeState = isHardware ? edgeState : (d.state || edgeState || 'NO_DATA');
   const advisoryNote = isHardware
@@ -322,7 +364,7 @@ function control(){
         <h2>Current System State</h2>
         <p class="card-sub">${isHardware ? 'Live ESP32-S3 edge authority' : 'Autonomous simulated closed loop'}</p>
       </div>
-      ${badge(isHardware ? 'HARDWARE' : 'SIMULATION', isHardware ? 'success' : 'neutral')}
+      ${badge(isHardware ? 'HARDWARE · ONLINE' : 'SIMULATION', isHardware ? 'success' : 'neutral')}
     </div>
     <div class="state-panel">
       <p>${isHardware ? 'AUTHORITATIVE CURRENT STATE' : 'ANALYZED SYSTEM STATE'}</p>
@@ -344,6 +386,7 @@ function control(){
 function risks(){
   const p=cache.latest?.prediction||{};
   const isHardware = appMode === 'HARDWARE';
+  const isFresh = !isHardware || isLiveHardwareFresh();
   const hasInference = Number.isFinite(p.ensemble_probability);
 
   return `<div class="three-col">${[
@@ -356,7 +399,12 @@ function risks(){
     let noteText = '';
     let metaDetails = '';
 
-    if (hasInference && !isHardware) {
+    if (isHardware && !isFresh) {
+      valueText = '<span style="font-size:15px;color:var(--muted);font-weight:500;">NO LIVE HARDWARE DATA</span>';
+      barWidth = 0;
+      noteText = 'HARDWARE DATA OFFLINE · NO LIVE HARDWARE DATA';
+      metaDetails = 'Telemetry connection timed out';
+    } else if (hasInference && !isHardware) {
       valueText = fmt(p[key]*100,1)+'%';
       barWidth = (p[key]||0)*100;
       noteText = `${esc(p.training_provenance||'SIMULATED_DATA')} · INFERENCE ACTIVE`;
@@ -391,7 +439,7 @@ function risks(){
     return `<section class="card">
       <div class="card-head">
         <h2>${name}</h2>
-        ${badge(isHardware ? (hasInference ? 'LIVE ML' : 'PENDING SENSORS') : 'ML SIM', isHardware && !hasInference ? 'neutral' : 'success')}
+        ${badge(isHardware ? (isFresh ? (hasInference ? 'LIVE ML' : 'PENDING SENSORS') : 'NO LIVE DATA') : 'ML SIM', isHardware && (!isFresh || !hasInference) ? 'neutral' : 'success')}
       </div>
       <div class="risk">${valueText}</div>
       ${metaDetails ? `<div style="font-size:12px;color:var(--muted);margin-top:-4px;margin-bottom:8px;font-weight:500;">${esc(metaDetails)}</div>` : ''}
@@ -522,7 +570,7 @@ function render(){
   if(page==='alerts')html=`<section class="card"><h2>Recorded faults</h2>${(cache.faults||[]).length?table(['Time','Mode','State','Reason','Source','Lifecycle'],cache.faults.map(e=>[clock(e.timestamp),e.payload.mode||'SYSTEM',e.payload.new_state,e.payload.reason,e.payload.source,e.payload.resolved?(e.payload.resolution||'RESOLVED'):'ACTIVE'])):'<div class="empty">No fault events recorded for this device.</div>'}</section>`;
   if(page==='history')html=`<section class="card"><div class="card-head"><h2>Telemetry history</h2><button id="download-history" class="secondary">Export JSON</button></div>${table(['Acquired','Sequence','Chamber °C','Current A','Observed state','Decision','Mode','Archived'],(cache.history||[]).map(r=>[clock(r.timestamp),r.sequence,fmt(r.payload.chamber_temp_c),fmt(r.payload.primary_current_a),r.payload.system_state,r.decision.state,r.mode,r.archived?'Yes':'No']))}</section>`;
   if(page==='analytics'){const m=system.model||{};html=`<section class="card"><div class="card-head"><h2>Held-out test results</h2>${badge(m.training_provenance||'UNAVAILABLE','warn')}</div>${table(['Estimator','Precision','Recall','F1','ROC AUC','Test samples'],Object.entries(m.test||{}).map(([name,v])=>[name,fmt(v.precision,3),fmt(v.recall,3),fmt(v.f1,3),fmt(v.roc_auc,3),v.samples]))}<p class="card-sub">${esc(m.split_method)}. Test evaluation on held-out datasets.</p></section><div class="three-col">${Object.entries(m.test||{}).map(([n,v])=>`<section class="card"><h2>${esc(n)} confusion matrix</h2>${table(['Actual / Predicted','Normal','Anomaly'],[['Normal',...v.confusion_matrix[0]],['Anomaly',...v.confusion_matrix[1]]])}</section>`).join('')}</div>`;}
-  if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health reported by source</h2>${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'current (ACS712)' : k, k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'PENDING CALIBRATION' : (v?'VALID':'INVALID'))).join('')}${row('GPS',t?.gps?.fix?'FIX':'NO FIX')}${t?.vibration_detected !== undefined ? row('Vibration', t.vibration_detected ? 'DETECTED' : 'NORMAL') : ''}</section></div>`;
+  if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health reported by source</h2>${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'current (ACS712)' : k, k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'PENDING CALIBRATION' : (v?'VALID':'INVALID'))).join('')}${row('GPS',t?.gps?.fix?'FIX':'NO FIX')}${t?.vibration_detected !== undefined ? row('Vibration', t.vibration_detected ? 'DETECTED' : 'NORMAL') : ''}${(t?.mode||appMode)==='HARDWARE'?row('Current input source',t?.current_source||'EMULATED'):''}${(t?.mode||appMode)==='HARDWARE'?row('ACS712 calibration',t?.current_calibrated?'CALIBRATED':'PENDING'):''}</section></div>`;
   if(page==='validation')html=`<section class="card"><div class="card-head"><div><h2>Physical measurement register</h2><p class="card-sub">Values stay empty until hardware evidence is submitted.</p></div><button id="export-validation" class="secondary">Export CSV</button></div>${table(['Measurement','Value','Status','Evidence source'],(cache.validation?.metrics||[]).map(m=>[m.metric,m.value??'—',m.status,m.measurement_source]))}</section>`;
   if(page==='archive')html=archiveView();
   

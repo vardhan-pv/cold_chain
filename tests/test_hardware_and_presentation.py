@@ -669,16 +669,78 @@ def test_physical_safety_logic_independent_of_emulated_current(hw_app):
 
 
 def test_dashboard_provenance_and_ml_rendering_elements():
-    """Regression: Dashboard renders EMULATED badge, ACS712 pending calibration,
-    and active ML inference metadata in source code."""
+    """Regression: Dashboard renders clean KPI card without EMULATED badge directly on main card,
+    discloses current provenance in System Health, and supports freshness offline rules."""
     from pathlib import Path
     app_js = Path(__file__).resolve().parents[1] / 'dashboard' / 'src' / 'app.js'
     code = app_js.read_text(encoding='utf-8')
-    assert "EMULATED" in code
-    assert "ACS712 calibration: PENDING" in code
-    assert "HARDWARE DATA (HYBRID EMULATED CURRENT)" in code
-    assert "Latency:" in code
-    assert "Threshold:" in code
+    assert "Current input source" in code
+    assert "ACS712 calibration" in code
+    assert "isLiveHardwareFresh" in code
+    assert "HARDWARE · ONLINE" in code
+    assert "HARDWARE · OFFLINE" in code
+    assert "NO LIVE HARDWARE DATA" in code
+
+
+def test_telemetry_freshness_and_offline_status_transitions(hw_app):
+    """Regression: Verifies recent telemetry -> ONLINE, stale telemetry (>15s) -> STALE/OFFLINE,
+    historical records preserved, and automatic return to ONLINE upon new telemetry."""
+    from datetime import datetime, timezone, timedelta
+    from database.models import Device
+    app, client, hw_token, _ = hw_app
+
+    # 1. Post recent hardware telemetry -> ONLINE
+    t1 = make_hw_telemetry(
+        sequence=1, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=0.0,
+        sht_ok=True, sht_temp=28.40, humidity=74.0,
+        door_open=False, current_source='EMULATED', current_calibrated=False
+    )
+    res1 = client.post('/api/v1/telemetry', json=t1.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res1.status_code == 200
+
+    latest1 = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    assert latest1['connectivity'] == 'ONLINE'
+    assert latest1['online'] is True
+    assert latest1['data_stale'] is False
+    assert latest1['telemetry']['payload']['chamber_temp_c'] == 28.50
+
+    # 2. Simulate hardware disconnection / time pass (>15 seconds since last telemetry)
+    with app.state.service.Session() as s:
+        dev = s.get(Device, 'CCU-HW-TEST')
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=25)
+        dev.last_seen = old_time.isoformat()
+        s.commit()
+
+    latest2 = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    assert latest2['connectivity'] == 'STALE'
+    assert latest2['online'] is False
+    assert latest2['data_stale'] is True
+    # Historical telemetry row is still preserved in DB/history, but data is flagged stale
+    assert latest2['telemetry'] is not None
+    assert latest2['seconds_since_received'] >= 20.0
+
+    # 3. New telemetry packet arrives -> hardware returns to ONLINE
+    t2 = make_hw_telemetry(
+        sequence=2, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.40,
+        heatsink_ok=True, heatsink_temp=28.10,
+        current_ok=False, current_val=3.5,
+        sht_ok=True, sht_temp=28.40, humidity=74.0,
+        door_open=False, current_source='EMULATED', current_calibrated=False
+    )
+    t2.primary_cooling = True
+    res2 = client.post('/api/v1/telemetry', json=t2.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res2.status_code == 200
+
+    latest3 = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    assert latest3['connectivity'] == 'ONLINE'
+    assert latest3['online'] is True
+    assert latest3['data_stale'] is False
+    assert latest3['telemetry']['payload']['chamber_temp_c'] == 28.40
+
 
 
 

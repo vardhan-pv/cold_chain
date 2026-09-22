@@ -242,8 +242,10 @@ class Service:
             if d.mode == 'HARDWARE' and t:
                 telemetry_data = t.payload if hasattr(t, 'payload') else {}
                 current_state = telemetry_data.get('system_state', current_state)
+            is_online = age is not None and age <= 15.0
             return {'device':serialize(d),'telemetry':serialize(t) if t else None,
                 'prediction':p.payload if p else None,'rerouting':route.payload if route and
                     current_state in ('CRITICAL_FAILURE','REROUTING') else None,
-                'connectivity':'ONLINE' if age is not None and age<20 else 'STALE' if age is not None else 'NO_DATA',
-                'seconds_since_received':round(age,1) if age is not None else None}
+                'connectivity':'ONLINE' if is_online else 'STALE' if age is not None else 'NO_DATA',
+                'seconds_since_received':round(age,1) if age is not None else None,
+                'online':is_online,'data_stale':not is_online,'last_seen':d.last_seen}
