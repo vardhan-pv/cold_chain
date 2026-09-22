@@ -9,6 +9,8 @@ constexpr int PIN_ONEWIRE = -1, PIN_SDA = -1, PIN_SCL = -1, PIN_CURRENT = -1, PI
 constexpr int PIN_GPS_RX = -1, PIN_GPS_TX = -1, PIN_PRIMARY = -1, PIN_BACKUP = -1;
 constexpr int PIN_GREEN = -1, PIN_YELLOW = -1, PIN_RED = -1, PIN_BUZZER = -1;
 constexpr bool CURRENT_CALIBRATED = false;
+constexpr bool ENABLE_EMULATED_CURRENT = false;
+constexpr float EMULATED_PRIMARY_CURRENT_A = 3.5f;
 constexpr float CURRENT_ZERO_MV = 0, CURRENT_MV_PER_AMP = 0;
 constexpr uint8_t CHAMBER_ROM[8] = {0}, HEATSINK_ROM[8] = {0};
 constexpr bool OPTIONAL_OLED = false;

@@ -94,14 +94,15 @@ class Controller:
         has_pending_sensors = t.mode == 'HARDWARE' and any(s not in self.commissioned_sensors for s in ('chamber', 'heatsink', 'current'))
         advisory_status = 'HARDWARE_PENDING_SENSORS' if has_pending_sensors else None
 
+        is_physical_current = t.current_source in ('ACS712', 'PHYSICAL') or (t.mode == 'SIMULATION' and t.current_source != 'EMULATED')
         critical = None
         if runtime_sensor_failures:
             critical = f"Commissioned critical sensor ({', '.join(runtime_sensor_failures)}) runtime failure; cooling inhibited"
         elif t.heatsink_temp_c is not None and t.heatsink_temp_c >= L.hot_limit_c:
             critical = 'Shared heatsink overtemperature; both cooling channels inhibited'
-        elif t.primary_current_a is not None and t.primary_current_a >= L.current_limit_a:
+        elif is_physical_current and t.primary_current_a is not None and t.primary_current_a >= L.current_limit_a:
             critical = 'Primary overcurrent; manual electrical inspection required'
-        elif (not t.primary_cooling and t.primary_current_a is not None and t.primary_current_a > L.off_current_max_a and
+        elif (is_physical_current and not t.primary_cooling and t.primary_current_a is not None and t.primary_current_a > L.off_current_max_a and
               (self.off_transition_at is None or now-self.off_transition_at >= 0.5)):
             critical = 'Primary draws current while commanded OFF; backup inhibited'
         elif (not has_pending_sensors and t.chamber_temp_c is not None and t.chamber_temp_c >= L.critical_c and
@@ -142,7 +143,7 @@ class Controller:
             else:
                 self.on_since = None
 
-            electrical_fault = (t.primary_cooling and self.on_since is not None and
+            electrical_fault = (is_physical_current and t.primary_cooling and self.on_since is not None and
                 now - self.on_since >= L.current_grace_s and t.primary_current_a is not None and t.primary_current_a < L.current_min_a)
             thermal_fault = (t.primary_cooling and t.door_open is False and
                 t.chamber_temp_c is not None and t.chamber_temp_c > L.warning_c and rate > 0.15)

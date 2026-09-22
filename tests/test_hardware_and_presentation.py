@@ -21,7 +21,8 @@ def hw_app(tmp_path):
 
 def make_hw_telemetry(device_id='CCU-HW-TEST', sequence=1, system_state='NORMAL',
                       chamber_ok=False, chamber_temp=None, heatsink_ok=False, heatsink_temp=None,
-                      current_ok=False, current_val=None, sht_ok=False, sht_temp=28.0, humidity=55.0, door_open=False):
+                      current_ok=False, current_val=None, sht_ok=False, sht_temp=28.0, humidity=55.0, door_open=False,
+                      current_source='NONE', current_calibrated=False):
     return Telemetry(
         schema_version='1.0',
         device_id=device_id,
@@ -49,7 +50,9 @@ def make_hw_telemetry(device_id='CCU-HW-TEST', sequence=1, system_state='NORMAL'
             door=True
         ),
         fault_injection='NONE',
-        buffered=False
+        buffered=False,
+        current_source=current_source,
+        current_calibrated=current_calibrated
     )
 
 def test_hardware_pending_sensors_do_not_enter_critical_failure(hw_app):
@@ -548,5 +551,134 @@ def test_reboot_after_resolved_incident_starts_normal_if_no_active_fault(hw_app)
     decision = res_boot.json()['decision']
     assert decision['state'] == 'NORMAL'
     assert decision['alarm'] is False
+
+
+def test_hybrid_emulated_current_hardware_mode_preserves_hardware_identity(hw_app):
+    """Regression: HARDWARE mode remains HARDWARE; physical sensors remain real;
+    current_source is EMULATED, current_calibrated is false, and physical ACS712 health remains uncalibrated (false)."""
+    app, client, hw_token, _ = hw_app
+    # Primary cooling OFF -> current ~0.0 A
+    t_off = make_hw_telemetry(
+        sequence=1, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=0.0,
+        sht_ok=True, sht_temp=28.40, humidity=74.0,
+        door_open=False, current_source='EMULATED', current_calibrated=False
+    )
+    t_off.primary_cooling = False
+    res_off = client.post('/api/v1/telemetry', json=t_off.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_off.status_code == 200
+    payload_off = client.get('/api/latest?device_id=CCU-HW-TEST').json()['telemetry']['payload']
+    assert payload_off['mode'] == 'HARDWARE'
+    assert payload_off['chamber_temp_c'] == 28.50
+    assert payload_off['heatsink_temp_c'] == 28.00
+    assert payload_off['primary_cooling'] is False
+    assert payload_off['primary_current_a'] == 0.0
+    assert payload_off['current_source'] == 'EMULATED'
+    assert payload_off['current_calibrated'] is False
+    assert payload_off['sensor_health']['current'] is False  # Physical sensor is NOT claimed calibrated
+
+    # Primary cooling ON -> configured demo current (3.5 A)
+    t_on = make_hw_telemetry(
+        sequence=2, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.40,
+        heatsink_ok=True, heatsink_temp=28.20,
+        current_ok=False, current_val=3.5,
+        sht_ok=True, sht_temp=28.40, humidity=74.0,
+        door_open=False, current_source='EMULATED', current_calibrated=False
+    )
+    t_on.primary_cooling = True
+    res_on = client.post('/api/v1/telemetry', json=t_on.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_on.status_code == 200
+    payload_on = client.get('/api/latest?device_id=CCU-HW-TEST').json()['telemetry']['payload']
+    assert payload_on['mode'] == 'HARDWARE'
+    assert payload_on['primary_cooling'] is True
+    assert payload_on['primary_current_a'] == 3.5
+    assert payload_on['current_source'] == 'EMULATED'
+    assert payload_on['current_calibrated'] is False
+    assert payload_on['sensor_health']['current'] is False
+
+
+def test_ml_pipeline_runs_full_inference_with_emulated_current(hw_app):
+    """Regression: ML feature engineering succeeds with explicit emulated current and runs
+    XGBoost, Random Forest, and Weighted Ensemble inference with latency and threshold."""
+    app, client, hw_token, _ = hw_app
+    # Send historical and current samples with emulated current
+    for seq in range(1, 4):
+        t = make_hw_telemetry(
+            sequence=seq, system_state='NORMAL',
+            chamber_ok=True, chamber_temp=28.50 - seq * 0.05,
+            heatsink_ok=True, heatsink_temp=28.00 + seq * 0.05,
+            current_ok=False, current_val=3.5,
+            sht_ok=True, sht_temp=28.40, humidity=74.0,
+            door_open=False, current_source='EMULATED', current_calibrated=False
+        )
+        t.primary_cooling = True
+        res = client.post('/api/v1/telemetry', json=t.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+        assert res.status_code == 200
+
+    latest = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    prediction = latest['prediction']
+    assert prediction['status'] == 'INFERENCE_COMPLETE'
+    assert isinstance(prediction['xgboost_probability'], float)
+    assert 0.0 <= prediction['xgboost_probability'] <= 1.0
+    assert isinstance(prediction['random_forest_probability'], float)
+    assert 0.0 <= prediction['random_forest_probability'] <= 1.0
+    assert isinstance(prediction['ensemble_probability'], float)
+    assert 0.0 <= prediction['ensemble_probability'] <= 1.0
+    assert isinstance(prediction['threshold'], float)
+    assert 0.0 < prediction['threshold'] < 1.0
+    assert isinstance(prediction['inference_ms'], (int, float))
+    assert prediction['inference_ms'] >= 0
+    assert prediction['model_version'] is not None
+    assert prediction['feature_provenance'] == 'HARDWARE_HYBRID_EMULATED_CURRENT'
+
+
+def test_physical_safety_logic_independent_of_emulated_current(hw_app):
+    """Regression: Emulated current does not trigger false electrical overcurrent faults,
+    while genuine physical faults (heatsink overtemp, sensor loss) still trigger CRITICAL_FAILURE."""
+    app, client, hw_token, _ = hw_app
+    # Emulated current while cooling is commanded ON does not trip electrical overcurrent
+    t_safe = make_hw_telemetry(
+        sequence=1, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=3.5,
+        sht_ok=True, door_open=False,
+        current_source='EMULATED', current_calibrated=False
+    )
+    t_safe.primary_cooling = True
+    res_safe = client.post('/api/v1/telemetry', json=t_safe.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_safe.status_code == 200
+    assert res_safe.json()['decision']['state'] == 'NORMAL'
+
+    # Genuine physical thermal fault (heatsink >= 65 C) still triggers CRITICAL_FAILURE
+    t_thermal = make_hw_telemetry(
+        sequence=2, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=66.00,
+        current_ok=False, current_val=3.5,
+        sht_ok=True, door_open=False,
+        current_source='EMULATED', current_calibrated=False
+    )
+    res_thermal = client.post('/api/v1/telemetry', json=t_thermal.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_thermal.status_code == 200
+    assert res_thermal.json()['decision']['state'] == 'CRITICAL_FAILURE'
+    assert 'heatsink overtemperature' in res_thermal.json()['decision']['reason'].lower()
+
+
+def test_dashboard_provenance_and_ml_rendering_elements():
+    """Regression: Dashboard renders EMULATED badge, ACS712 pending calibration,
+    and active ML inference metadata in source code."""
+    from pathlib import Path
+    app_js = Path(__file__).resolve().parents[1] / 'dashboard' / 'src' / 'app.js'
+    code = app_js.read_text(encoding='utf-8')
+    assert "EMULATED" in code
+    assert "ACS712 calibration: PENDING" in code
+    assert "HARDWARE DATA (HYBRID EMULATED CURRENT)" in code
+    assert "Latency:" in code
+    assert "Threshold:" in code
+
 
 

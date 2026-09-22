@@ -214,7 +214,25 @@ void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,
   j["timestamp"]=timestamp;j["uptime_ms"]=now;j["mode"]="HARDWARE";
   auto number=[&](const char* key,float value,bool valid){if(valid&&isfinite(value))j[key]=value;else j[key]=nullptr;};
   number("chamber_temp_c",s.chamber,s.chamberOK);number("heatsink_temp_c",s.heatsink,s.heatsinkOK);
-  number("sht31_temp_c",s.shtTemp,s.shtOK);number("humidity_pct",s.humidity,s.shtOK);number("primary_current_a",s.current,s.currentOK);
+  number("sht31_temp_c",s.shtTemp,s.shtOK);number("humidity_pct",s.humidity,s.shtOK);
+
+  bool currentAvailable = false;
+  float currentVal = 0.0f;
+  const char* currentSource = "NONE";
+  if (s.currentOK && CURRENT_CALIBRATED) {
+    currentAvailable = true;
+    currentVal = s.current;
+    currentSource = "ACS712";
+  } else if (ENABLE_EMULATED_CURRENT) {
+    currentAvailable = true;
+    currentSource = "EMULATED";
+    currentVal = primaryObserved() ? EMULATED_PRIMARY_CURRENT_A : 0.0f;
+  }
+  if (currentAvailable) j["primary_current_a"] = currentVal;
+  else j["primary_current_a"] = nullptr;
+  j["current_source"] = currentSource;
+  j["current_calibrated"] = CURRENT_CALIBRATED;
+
   if(s.doorOK)j["door_open"]=s.doorOpen;else j["door_open"]=nullptr;
   j["door_open_s"]=s.doorOK&&s.doorOpen?s.doorSeconds:0;
   auto gps=j["gps"].to<JsonObject>();gps["fix"]=s.gpsFix;gps["source"]=s.gpsFix?"GPS":"NONE";
@@ -231,7 +249,7 @@ void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,
   serializeJson(j,packet.json,sizeof(packet.json));
   if(xQueueSend(queue,&packet,0)!=pdTRUE){Packet old;xQueueReceive(queue,&old,0);dropped++;xQueueSend(queue,&packet,0);}
 
-  char chStr[16], hsStr[16], shtStr[16], humStr[16], curStr[24], doorStr[24], gpsStr[16];
+  char chStr[16], hsStr[16], shtStr[16], humStr[16], curStr[32], doorStr[24], gpsStr[16];
   if (s.chamberOK) snprintf(chStr, sizeof(chStr), "%.2f C", s.chamber); else snprintf(chStr, sizeof(chStr), "null");
   if (s.heatsinkOK) snprintf(hsStr, sizeof(hsStr), "%.2f C", s.heatsink); else snprintf(hsStr, sizeof(hsStr), "null");
   if (s.shtOK) {
@@ -241,7 +259,13 @@ void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,
     snprintf(shtStr, sizeof(shtStr), "null");
     snprintf(humStr, sizeof(humStr), "null");
   }
-  if (s.currentOK) snprintf(curStr, sizeof(curStr), "%.2f A", s.current); else snprintf(curStr, sizeof(curStr), "UNCALIBRATED");
+  if (s.currentOK) {
+    snprintf(curStr, sizeof(curStr), "%.2f A", s.current);
+  } else if (ENABLE_EMULATED_CURRENT) {
+    snprintf(curStr, sizeof(curStr), "%.2f A (EMULATED)", currentVal);
+  } else {
+    snprintf(curStr, sizeof(curStr), "UNCALIBRATED");
+  }
   if (s.doorOK) {
     if (s.doorOpen) snprintf(doorStr, sizeof(doorStr), "OPEN (%.1fs)", s.doorSeconds);
     else snprintf(doorStr, sizeof(doorStr), "CLOSED");

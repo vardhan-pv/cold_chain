@@ -13,7 +13,11 @@ def features_for(history: list[Telemetry]):
     if not history:
         return None
     t = history[-1]
-    if not all(t.sensor_health.model_dump().values()):
+    health = t.sensor_health
+    current_feature_available = health.current or (
+        t.primary_current_a is not None and getattr(t, 'current_source', None) == 'EMULATED'
+    )
+    if not (health.chamber and health.heatsink and health.sht31 and health.door and current_feature_available):
         return None
     now = t.timestamp.timestamp()
     window = [x for x in history if 0 <= now - x.timestamp.timestamp() <= 60

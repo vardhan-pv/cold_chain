@@ -13,6 +13,7 @@ from ml.feature_engineering import features_for
 from ml.predictor import Predictor
 from backend.faults import update_faults
 from backend.commands import track
+from backend.config import ENABLE_EMULATED_CURRENT, EMULATED_PRIMARY_CURRENT_A, EMULATED_IDLE_CURRENT_A
 
 def utc():
     return datetime.now(timezone.utc).isoformat()
@@ -68,6 +69,13 @@ class Service:
                 raise HTTPException(404,'Register the device before sending telemetry')
             if d.mode != t.mode:
                 raise HTTPException(409,'Device mode is immutable; register a separate device for hardware')
+            if t.mode == 'HARDWARE' and ENABLE_EMULATED_CURRENT and t.current_source == 'EMULATED':
+                if t.primary_current_a is None:
+                    current_val = EMULATED_PRIMARY_CURRENT_A if t.primary_cooling else EMULATED_IDLE_CURRENT_A
+                    t = t.model_copy(update={
+                        'primary_current_a': current_val,
+                        'current_calibrated': False
+                    })
             old=s.scalar(select(TelemetryRow).where(TelemetryRow.device_id==t.device_id,
                 TelemetryRow.boot_id==t.boot_id,TelemetryRow.sequence==t.sequence))
             payload=t.model_dump(mode='json')
@@ -118,6 +126,8 @@ class Service:
                 }
             else:
                 prediction=self.predictor.predict(feature)
+                if t.mode == 'HARDWARE' and getattr(t, 'current_source', None) == 'EMULATED':
+                    prediction['feature_provenance'] = 'HARDWARE_HYBRID_EMULATED_CURRENT'
             if archive:
                 decision={'state':t.system_state,'authority':'ARCHIVED_NO_CONTROL',
                     'reason':'Buffered, stale or out-of-order telemetry; no live decision',

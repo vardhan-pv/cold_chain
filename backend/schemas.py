@@ -59,6 +59,8 @@ class Telemetry(Contract):
     fault_injection: Literal['NONE', 'PRIMARY_FAILURE', 'BACKUP_FAILURE'] = 'NONE'
     buffered: bool = False
     vibration_detected: bool | None = None
+    current_source: Literal['NONE', 'ACS712', 'PHYSICAL', 'EMULATED', 'SIMULATED'] = 'NONE'
+    current_calibrated: bool = False
 
     @field_validator('timestamp')
     @classmethod
@@ -77,6 +79,10 @@ class Telemetry(Contract):
             'current': ['primary_current_a'], 'door': ['door_open'],
         }.items():
             ok = getattr(self.sensor_health, flag)
+            if flag == 'current' and self.current_source == 'EMULATED':
+                if self.primary_current_a is None:
+                    raise ValueError('current: EMULATED current source requires a non-null numeric primary_current_a')
+                continue
             if any((getattr(self, f) is not None) != ok for f in fields):
                 raise ValueError(f'{flag}: invalid sensor values must be null; valid values required when healthy')
         if self.mode == 'HARDWARE' and self.gps.source == 'SIMULATED':

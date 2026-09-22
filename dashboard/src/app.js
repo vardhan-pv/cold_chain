@@ -249,8 +249,12 @@ function kpis(){
     let footerText = '';
     if(l==='Primary current'){
       if(Number.isFinite(v)){
-        valueDisplay=`${fmt(v)}<small>${u}</small>`;
-        footerText=`<span class="status-dot"></span>${f}`;
+        valueDisplay=`${fmt(v,2)}<small>${u}</small>`;
+        if(isHardware && (t.current_source === 'EMULATED' || !t.sensor_health?.current)){
+          footerText=`<span class="badge neutral" style="font-size:10px;padding:1px 5px;margin-right:4px;">EMULATED</span> ACS712 calibration: PENDING`;
+        } else {
+          footerText=`<span class="status-dot"></span>${f}`;
+        }
       } else if(isHardware){
         valueDisplay=`<span class="pending-badge">Waiting for calibration</span>`;
         footerText=`ACS712 · Pending calibration (not failure)`;
@@ -350,16 +354,30 @@ function risks(){
     let valueText = 'Unavailable';
     let barWidth = 0;
     let noteText = '';
+    let metaDetails = '';
 
     if (hasInference && !isHardware) {
       valueText = fmt(p[key]*100,1)+'%';
       barWidth = (p[key]||0)*100;
       noteText = `${esc(p.training_provenance||'SIMULATED_DATA')} · INFERENCE ACTIVE`;
+      if (name==='XGBoost' && p.inference_ms!=null) metaDetails=`Latency: ${fmt(p.inference_ms,1)}ms · ${p.model_version||'v1'}`;
+      if (name==='Weighted ensemble' && p.threshold!=null) metaDetails=`Threshold: ${fmt(p.threshold*100,1)}%`;
     } else if (isHardware) {
       if (hasInference) {
         valueText = fmt(p[key]*100,1)+'%';
         barWidth = (p[key]||0)*100;
-        noteText = 'HARDWARE DATA · LIVE INFERENCE';
+        noteText = 'HARDWARE DATA (HYBRID EMULATED CURRENT) · LIVE INFERENCE';
+        if (name==='XGBoost') {
+          const lat = p.inference_ms!=null ? `${fmt(p.inference_ms,1)}ms` : '';
+          const ver = p.model_version ? `${p.model_version}` : '';
+          metaDetails = [lat, ver].filter(Boolean).join(' · ');
+        } else if (name==='Random Forest') {
+          metaDetails = p.model_version ? `Model: ${p.model_version}` : '';
+        } else if (name==='Weighted ensemble') {
+          const thr = p.threshold!=null ? `Threshold: ${fmt(p.threshold*100,1)}%` : '';
+          const adv = p.predicted_anomaly ? 'ADVISORY WARNING' : 'ADVISORY NORMAL';
+          metaDetails = [thr, adv].filter(Boolean).join(' · ');
+        }
       } else {
         valueText = '<span style="font-size:15px;color:var(--muted);font-weight:500;">Waiting for physical sensor data</span>';
         barWidth = 0;
@@ -376,6 +394,7 @@ function risks(){
         ${badge(isHardware ? (hasInference ? 'LIVE ML' : 'PENDING SENSORS') : 'ML SIM', isHardware && !hasInference ? 'neutral' : 'success')}
       </div>
       <div class="risk">${valueText}</div>
+      ${metaDetails ? `<div style="font-size:12px;color:var(--muted);margin-top:-4px;margin-bottom:8px;font-weight:500;">${esc(metaDetails)}</div>` : ''}
       <div class="bar">
         <svg viewBox="0 0 100 5" preserveAspectRatio="none">
           <rect width="${barWidth}" height="5" fill="#4c9070"/>
