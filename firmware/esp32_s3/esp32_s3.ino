@@ -44,7 +44,9 @@ void setup(){
 
   prefs.begin("coldchain",false);
   savedLatch=prefs.getBool("fault",false);
-  if(savedLatch)controller.latch();
+  if(savedLatch){
+    Serial.println("[BOOT] Stored NVS fault latch found; pending sensor validation");
+  }
 
   if(OPTIONAL_FAULT_BUTTONS){
     if(PIN_INJECT_PRIMARY>=0)pinMode(PIN_INJECT_PRIMARY,INPUT_PULLUP);
@@ -122,9 +124,11 @@ void loop(){
         autonomousEnabled = false;
         primaryCoolingOff();
         Serial.println("{\"event\":\"auto_cooling_disabled\"}");
-      } else if(command=="RESET CONFIRMED"&&coolingConfigured()&&s.chamberOK&&s.heatsinkOK&&
+      } else if((command=="RESET CONFIRMED" || command=="RESET" || command=="CLEAR FAULT")&&
+                coolingConfigured()&&s.chamberOK&&s.heatsinkOK&&
                 (!CURRENT_CALIBRATED || (s.currentOK && s.current < .3))&&
-                s.heatsink<50&&s.chamber<18&&!primaryObserved()&&!backupObserved()){
+                s.heatsink<50&&(!CURRENT_CALIBRATED || s.chamber<18)&&
+                !primaryObserved()&&!backupObserved()){
         controller.reset();
         prefs.putBool("fault",false);
         savedLatch=false;
@@ -165,6 +169,17 @@ void loop(){
 
     // Edge safety state machine
     if(coolingConfigured()&&(now>10000||(s.chamberOK&&s.heatsinkOK))){
+      const bool physicalSensorsHealthy = s.chamberOK && s.heatsinkOK && isfinite(s.chamber) &&
+                                          isfinite(s.heatsink) && (s.heatsink < 50.0f) &&
+                                          !injectPrimary && !injectBackup;
+
+      // Clear stale NVS fault latch if physical sensors are validated healthy
+      if(savedLatch && physicalSensorsHealthy && (!CURRENT_CALIBRATED || (s.currentOK && s.current < 7.0f))){
+        prefs.putBool("fault", false);
+        savedLatch = false;
+        Serial.println("{\"event\":\"fault_latch_cleared\",\"reason\":\"Physical sensors verified healthy; NVS latch cleared\"}");
+      }
+
       coldchain::Reading r;
       r.chamber=s.chamber;
       r.heatsink=s.heatsink;
@@ -194,6 +209,10 @@ void loop(){
         testModeActive=false;
         autonomousEnabled=false;
         primaryCoolingOff();
+      } else if(controller.output.state==coldchain::State::NORMAL && savedLatch){
+        prefs.putBool("fault",false);
+        savedLatch=false;
+        Serial.println("{\"event\":\"fault_latch_cleared\",\"reason\":\"State recovered to NORMAL; NVS latch cleared\"}");
       }
     }
 

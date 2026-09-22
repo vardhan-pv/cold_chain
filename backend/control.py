@@ -113,26 +113,28 @@ class Controller:
         elif self.state == 'CRITICAL_FAILURE':
             # This is a request to route; a destination may still be unavailable.
             transition('REROUTING', 'Cooling latched OFF; request a compatible facility')
+        elif has_pending_sensors:
+            # Hardware with uncommissioned sensors: edge loop is authoritative
+            if self.state in ('CRITICAL_FAILURE', 'REROUTING') and t.system_state in ('NORMAL', 'WARNING'):
+                transition(t.system_state, 'Edge safety loop recovered to normal operating state')
+            self.state = t.system_state
+            self.last_reason = 'ESP32 edge safety loop authoritative; physical probes pending'
+            self.primary = False
+            self.backup = False
+            return {
+                'state': t.system_state,
+                'primary_cooling': False,
+                'backup_cooling': False,
+                'alarm': t.system_state in ('CRITICAL_FAILURE', 'REROUTING'),
+                'tier': 3 if t.system_state in ('CRITICAL_FAILURE', 'REROUTING') else
+                        2 if t.system_state in ('PRIMARY_FAULT', 'BACKUP_ACTIVE', 'RECOVERY') else
+                        1 if t.system_state == 'WARNING' else 0,
+                'reason': self.last_reason,
+                'transitions': transitions,
+                'authority': 'ESP32_EDGE_LOOP',
+                'advisory_status': advisory_status
+            }
         elif self.state not in ('REROUTING',):
-            if has_pending_sensors:
-                # Hardware with uncommissioned sensors: edge loop is authoritative
-                self.state = t.system_state
-                self.last_reason = 'ESP32 edge safety loop authoritative; physical probes pending'
-                self.primary = False
-                self.backup = False
-                return {
-                    'state': t.system_state,
-                    'primary_cooling': False,
-                    'backup_cooling': False,
-                    'alarm': t.system_state in ('CRITICAL_FAILURE', 'REROUTING'),
-                    'tier': 3 if t.system_state in ('CRITICAL_FAILURE', 'REROUTING') else
-                            2 if t.system_state in ('PRIMARY_FAULT', 'BACKUP_ACTIVE', 'RECOVERY') else
-                            1 if t.system_state == 'WARNING' else 0,
-                    'reason': self.last_reason,
-                    'transitions': transitions,
-                    'authority': 'ESP32_EDGE_LOOP',
-                    'advisory_status': advisory_status
-                }
 
             if t.primary_cooling:
                 if self.on_since is None:

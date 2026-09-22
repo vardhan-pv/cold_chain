@@ -35,14 +35,28 @@ class Controller {
     previousPrimary=r.primaryObserved;
     const bool unexpectedCurrent=r.currentCalibrated&&!r.primaryObserved&&r.current>.5&&(!offSettling||elapsed(ms,offTransition)>=500);
     const bool currentFault=r.currentCalibrated&&(!isfinite(r.current)||r.current>=7||unexpectedCurrent);
-    const bool chamberCritical=r.chamber>=18&&(cooledOnce||elapsed(ms,startAt)>=600000);
+    const bool chamberCritical=r.currentCalibrated&&r.chamber>=18&&(cooledOnce||elapsed(ms,startAt)>=600000);
+    const bool activeFault=(!r.criticalValid || !isfinite(r.chamber) || !isfinite(r.heatsink) || currentFault ||
+                            r.heatsink>=65 || chamberCritical || (r.primaryObserved&&r.backupObserved) ||
+                            r.injectPrimary || r.injectBackup);
     const bool latched=output.state==State::CRITICAL_FAILURE || output.state==State::REROUTING;
-    if ((!r.criticalValid || !isfinite(r.chamber) || !isfinite(r.heatsink) || currentFault ||
-         r.heatsink>=65 || chamberCritical || (r.primaryObserved&&r.backupObserved)) && !latched) {
+    if (activeFault && !latched) {
       change(State::CRITICAL_FAILURE,ms,"Critical sensor or electrical/thermal safety fault");
     } else if(output.state==State::CRITICAL_FAILURE) {
       change(State::REROUTING,ms,"Cooling latched OFF; logistics assistance required");
-    } else if(output.state!=State::REROUTING) {
+    } else if(output.state==State::REROUTING) {
+      if(!activeFault) {
+        const bool warmChamber=r.currentCalibrated&&r.chamber>10;
+        const bool warning=warmChamber||(r.doorValid&&r.doorOpen&&r.doorSeconds>=30)||
+                           !r.secondaryValid||!r.doorValid||
+                           (isfinite(r.advisoryRisk)&&r.advisoryRisk>=.65);
+        if(warning) {
+          change(State::WARNING,ms,"Active fault cleared; warning conditions present");
+        } else {
+          change(State::NORMAL,ms,"Active fault cleared; thermal and sensor conditions recovered");
+        }
+      }
+    } else {
       if(r.primaryObserved) { if(!onTracking) {onTracking=true;onAt=ms;} } else onTracking=false;
       bool bad=(r.currentCalibrated&&r.primaryObserved&&onTracking&&elapsed(ms,onAt)>=10000&&r.current<.3) ||
         (r.primaryObserved&&r.doorValid&&!r.doorOpen&&r.chamber>10&&r.rate>.15) || r.injectPrimary;
@@ -51,7 +65,7 @@ class Controller {
         case State::NORMAL: case State::WARNING:
           if(bad&&elapsed(ms,badAt)>=10000) {
             change(State::PRIMARY_FAULT,ms,"Sustained primary fault confirmed");offTracking=false;
-          } else if(bad||r.chamber>10||r.doorSeconds>=30||!r.secondaryValid||!r.doorValid||
+          } else if(bad||(r.currentCalibrated&&r.chamber>10)||r.doorSeconds>=30||!r.secondaryValid||!r.doorValid||
                     (isfinite(r.advisoryRisk)&&r.advisoryRisk>=.65)) {
             if(output.state!=State::WARNING)change(State::WARNING,ms,"Observe sensor evidence");
           } else if(output.state!=State::NORMAL)change(State::NORMAL,ms,"Warning cleared");

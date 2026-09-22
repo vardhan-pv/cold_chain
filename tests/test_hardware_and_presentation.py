@@ -431,3 +431,122 @@ def test_dashboard_code_does_not_label_primary_cooling_not_commissioned():
     # Primary current must display 'Waiting for calibration' when uncalibrated in hardware mode
     assert "Waiting for calibration" in content
 
+
+def test_healthy_boot_primary_off_starts_normal(hw_app):
+    """Regression 1 & 6 & 7 & 8 & 9: Healthy boot with primary OFF, auto false, backup uncommissioned,
+    and ACS712 uncalibrated reports NORMAL and does not trigger REROUTING."""
+    app, client, hw_token, _ = hw_app
+    t = make_hw_telemetry(
+        sequence=1, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=None,
+        sht_ok=True, sht_temp=28.40, humidity=74.0,
+        door_open=False
+    )
+    t.primary_cooling = False
+    t.backup_cooling = False
+    res = client.post('/api/v1/telemetry', json=t.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res.status_code == 200
+    decision = res.json()['decision']
+    assert decision['state'] == 'NORMAL'
+    assert decision['primary_cooling'] is False
+    assert decision['backup_cooling'] is False
+    assert decision['alarm'] is False
+    assert decision['authority'] == 'ESP32_EDGE_LOOP'
+
+
+def test_door_open_warning_and_door_close_recovery_to_normal(hw_app):
+    """Regression 2 & 4: Door open >= 30s transitions to WARNING; closing door recovers to NORMAL."""
+    app, client, hw_token, _ = hw_app
+    # Step 1: Door opened for 35s
+    t_open = make_hw_telemetry(
+        sequence=1, system_state='WARNING',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=None,
+        sht_ok=True, door_open=True
+    )
+    t_open.door_open_s = 35
+    res_open = client.post('/api/v1/telemetry', json=t_open.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_open.status_code == 200
+    assert res_open.json()['decision']['state'] == 'WARNING'
+
+    # Step 2: Door closed
+    t_closed = make_hw_telemetry(
+        sequence=2, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=None,
+        sht_ok=True, door_open=False
+    )
+    t_closed.door_open_s = 0
+    res_closed = client.post('/api/v1/telemetry', json=t_closed.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_closed.status_code == 200
+    assert res_closed.json()['decision']['state'] == 'NORMAL'
+
+
+def test_prolonged_door_or_rerouting_recovers_to_normal_when_resolved(hw_app):
+    """Regression 3 & 4 & 5: When a historical REROUTING edge event clears, edge state and cloud recover to NORMAL."""
+    app, client, hw_token, _ = hw_app
+    # Step 1: System was in REROUTING
+    t_reroute = make_hw_telemetry(
+        sequence=1, system_state='REROUTING',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=None,
+        sht_ok=True, door_open=False
+    )
+    res_reroute = client.post('/api/v1/telemetry', json=t_reroute.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_reroute.status_code == 200
+    assert res_reroute.json()['decision']['state'] == 'REROUTING'
+
+    # Step 2: System recovers at the edge, sending NORMAL
+    t_recover = make_hw_telemetry(
+        sequence=2, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=None,
+        sht_ok=True, door_open=False
+    )
+    res_recover = client.post('/api/v1/telemetry', json=t_recover.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_recover.status_code == 200
+    assert res_recover.json()['decision']['state'] == 'NORMAL'
+
+    # Current authoritative state must be NORMAL, not stuck in REROUTING
+    latest = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    assert latest['telemetry']['payload']['system_state'] == 'NORMAL'
+    assert latest['telemetry']['decision']['state'] == 'NORMAL'
+
+
+def test_reboot_after_resolved_incident_starts_normal_if_no_active_fault(hw_app):
+    """Regression 10 & 11: Reboot after resolved incident starts in NORMAL when no active physical fault remains."""
+    app, client, hw_token, _ = hw_app
+    # Incident in past boot
+    t_past = make_hw_telemetry(
+        sequence=1, system_state='REROUTING',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=None,
+        sht_ok=True, door_open=False
+    )
+    t_past.boot_id = 'boot-hw-old-fault'
+    res_past = client.post('/api/v1/telemetry', json=t_past.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_past.status_code == 200
+
+    # Fresh reboot with new boot_id and healthy physical sensors
+    t_boot = make_hw_telemetry(
+        sequence=1, system_state='NORMAL',
+        chamber_ok=True, chamber_temp=28.50,
+        heatsink_ok=True, heatsink_temp=28.00,
+        current_ok=False, current_val=None,
+        sht_ok=True, door_open=False
+    )
+    t_boot.boot_id = 'boot-hw-fresh-reboot'
+    res_boot = client.post('/api/v1/telemetry', json=t_boot.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res_boot.status_code == 200
+    decision = res_boot.json()['decision']
+    assert decision['state'] == 'NORMAL'
+    assert decision['alarm'] is False
+
+
