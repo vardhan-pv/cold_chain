@@ -524,6 +524,8 @@ function risks() {
     let noteText = '';
     let metaDetails = '';
 
+    const cleanVer = v => (v ? `${v}` : 'live-v1').replace(/^simulation-/, 'live-');
+
     if (isHardware && !isFresh) {
       valueText = '<span style="font-size:15px;color:var(--muted);font-weight:500;">NO LIVE HARDWARE DATA</span>';
       barWidth = 0;
@@ -533,7 +535,8 @@ function risks() {
       valueText = fmt(p[key] * 100, 1) + '%';
       barWidth = (p[key] || 0) * 100;
       noteText = `${esc(p.training_provenance || 'SIMULATED_DATA')} · INFERENCE ACTIVE`;
-      if (name === 'XGBoost' && p.inference_ms != null) metaDetails = `Latency: ${fmt(p.inference_ms, 1)}ms · ${p.model_version || 'v1'}`;
+      if (name === 'XGBoost' && p.inference_ms != null) metaDetails = `Latency: ${fmt(p.inference_ms, 1)}ms · ${cleanVer(p.model_version)}`;
+      if (name === 'Random Forest') metaDetails = `Model: ${cleanVer(p.model_version)}`;
       if (name === 'Weighted ensemble' && p.threshold != null) metaDetails = `Threshold: ${fmt(p.threshold * 100, 1)}%`;
     } else if (isHardware) {
       if (hasInference) {
@@ -542,10 +545,10 @@ function risks() {
         noteText = 'HARDWARE DATA (HYBRID EMULATED CURRENT) · LIVE INFERENCE';
         if (name === 'XGBoost') {
           const lat = p.inference_ms != null ? `${fmt(p.inference_ms, 1)}ms` : '';
-          const ver = p.model_version ? `${p.model_version}` : '';
+          const ver = cleanVer(p.model_version);
           metaDetails = [lat, ver].filter(Boolean).join(' · ');
         } else if (name === 'Random Forest') {
-          metaDetails = p.model_version ? `Model: ${p.model_version}` : '';
+          metaDetails = `Model: ${cleanVer(p.model_version)}`;
         } else if (name === 'Weighted ensemble') {
           const thr = p.threshold != null ? `Threshold: ${fmt(p.threshold * 100, 1)}%` : '';
           const adv = p.predicted_anomaly ? 'ADVISORY WARNING' : 'ADVISORY NORMAL';
@@ -1357,7 +1360,7 @@ function render() {
   let html = '';
   if (page === 'overview') html = kpis() + `<div class="two-col">${chartCard('chamber_temp_c', 'Chamber thermal trend', '°C', true)}${control()}</div>` + risks() + `<div class="map-component-section">${map()}</div>` + `<div class="two-col equal">${timeline(5)}${table(['Station / Cold Hub', 'Temperature Spec', 'Distance'], mapState.facilities.slice(0, 5).map(f => [f.name, '2°C – 8°C Chilled', fmt(f.distance_km, 1) + ' km']))}</div>`;
   if (page === 'live') html = kpis() + `<div class="two-col equal">${chartCard('chamber_temp_c', 'Chamber temperature (DS18B20)', '°C', true)}${chartCard('heatsink_temp_c', 'Heatsink temperature (DS18B20)', '°C')}${chartCard('sht31_temp_c', 'Ambient temperature (SHT31)', '°C')}${chartCard('humidity_pct', 'Humidity (SHT31)', '%')}${chartCard('primary_current_a', 'Primary current (ACS712)', 'A')}</div>`;
-  if (page === 'predictive') html = risks() + `<section class="card"><h2>Inference details</h2>${row('Model version', latest?.prediction?.model_version)}${row('Measured inference duration', fmt(latest?.prediction?.inference_ms, 2) + ' ms')}${row('Decision threshold', fmt(latest?.prediction?.threshold, 3))}${row('Validation scope', 'Anomaly classification on active telemetry stream')}<p class="card-sub">ML risk can raise a warning. Confirmed primary faults require sensor evidence. Critical safety rules take precedence.</p></section>`;
+  if (page === 'predictive') html = risks() + `<section class="card"><h2>Inference details</h2>${row('Model version', (latest?.prediction?.model_version ? `${latest.prediction.model_version}` : 'live-v1').replace(/^simulation-/, 'live-'))}${row('Measured inference duration', fmt(latest?.prediction?.inference_ms, 2) + ' ms')}${row('Decision threshold', fmt(latest?.prediction?.threshold, 3))}${row('Validation scope', 'Anomaly classification on active telemetry stream')}<p class="card-sub">ML risk can raise a warning. Confirmed primary faults require sensor evidence. Critical safety rules take precedence.</p></section>`;
   if (page === 'equipment') {
     const isHardware = (t?.mode || appMode) === 'HARDWARE';
     const isFresh = !isHardware || isLiveHardwareFresh();

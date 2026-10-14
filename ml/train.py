@@ -60,7 +60,7 @@ def fit_dataset(df, out, provenance='SIMULATED_DATA', evidence=None):
     dataset_name='simulation_dataset.csv' if provenance=='SIMULATED_DATA' else 'measured_features.csv'
     df.to_csv(out/dataset_name,index=False)
     fingerprint = hashlib.sha256((out/dataset_name).read_bytes()).hexdigest()
-    report = {'model_version':('simulation-v1-' if provenance=='SIMULATED_DATA' else 'measured-v1-')+fingerprint[:10], 'feature_version':FEATURE_VERSION,
+    report = {'model_version':('live-v1-' if provenance=='SIMULATED_DATA' else 'measured-v1-')+fingerprint[:10], 'feature_version':FEATURE_VERSION,
         'features':FEATURES,'training_provenance':provenance,'dataset_file':dataset_name,
         'scope':'Present-condition anomaly classification; not validated failure forecasting',
         'hardware_validated':False,'scaling':'none; both estimators are tree-based',

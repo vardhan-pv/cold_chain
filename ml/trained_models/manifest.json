@@ -1,5 +1,5 @@
 {
-  "model_version": "simulation-v1-1a868fc14b",
+  "model_version": "live-v1-1a868fc14b",
   "feature_version": "peltier-v1",
   "features": [
     "chamber_temp_c",
