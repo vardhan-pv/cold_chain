@@ -81,13 +81,14 @@ function setAppMode(mode){
   $('live-controls').hidden=mode==='SIMULATION';
   $('mode-eyebrow').textContent=mode==='SIMULATION'?'SIMULATION ENGINE ACTIVE':'LIVE ESP32 HARDWARE INGESTION';
   device='';
+  resetMapState();
   refresh();
 }
 
 $('mode-sim-tab').onclick=()=>setAppMode('SIMULATION');
 $('mode-live-tab').onclick=()=>setAppMode('HARDWARE');
 
-$('device').onchange=()=>{device=$('device').value;refresh();};
+$('device').onchange=()=>{device=$('device').value;resetMapState();refresh();};
 
 async function action(fn){
   document.querySelectorAll('.simulation-bar button').forEach(b=>b.disabled=true);
@@ -590,18 +591,460 @@ function timeline(limit=8){
   </section>`;
 }
 
-function map(){
-  const t=cache.latest?.telemetry?.payload,route=cache.latest?.rerouting,warehouses=cache.warehouses||[];
-  if(!t?.gps.fix)return empty('No valid GPS fix','No coordinates or destination are fabricated.');
-  const points=[{latitude:t.gps.latitude,longitude:t.gps.longitude,name:'Vehicle',vehicle:true},...warehouses];
-  let lats=points.map(p=>p.latitude),lons=points.map(p=>p.longitude);
-  let lo=Math.min(...lons)-.009,hi=Math.max(...lons)+.009,bottom=Math.min(...lats)-.009,top=Math.max(...lats)+.009;
-  const xy=p=>[40+(p.longitude-lo)/(hi-lo)*540,255-(p.latitude-bottom)/(top-bottom)*220];
-  const [vx,vy]=xy(points[0]);
-  const selected=route?.selected;
-  const [sx,sy]=selected?xy(selected):[0,0];
-  return `<section class="card"><div class="card-head"><div><h2>Location & facilities</h2><p class="card-sub">Geographic schematic · not a road navigation map</p></div>${badge(t.gps.source==='SIMULATED'?'SIMULATED LOCATION':'GPS FIX','warn')}</div><svg class="map" viewBox="0 0 630 285" role="img" aria-label="Vehicle and demonstration cold storage locations">${Array.from({length:9},(_,i)=>`<path class="map-grid" d="M ${30+i*70} 0 V 285 M 0 ${i*38} H 630"/>`).join('')}${selected?`<line x1="${vx}" y1="${vy}" x2="${sx}" y2="${sy}"/>`:''}${points.map(p=>{const [x,y]=xy(p);return `<circle cx="${x}" cy="${y}" r="${p.vehicle?8:5}" class="${p.vehicle?'vehicle':'facility'}"/><text x="${x}" y="${y-13}" text-anchor="middle">${esc(p.name)}</text>`;}).join('')}</svg><p class="card-sub">${selected?'Selected: '+esc(selected.name)+' · '+fmt(selected.distance_km,2)+' km straight-line':esc(route?.reason||'Rerouting activates after a critical failure.')}</p></section>`;
+// Real Leaflet Map & GIS Routing State
+const mapState = {
+  instance: null,
+  containerEl: null,
+  vehicleMarker: null,
+  facilityMarkers: new Map(),
+  facilityLayer: null,
+  routeLayer: null,
+  facilities: [],
+  nearestFacility: null,
+  currentRoute: null,
+  selectedFacilityId: null,
+  activeDeviceId: '',
+  lastGpsKey: '',
+  lastFetchTime: 0,
+  facilitiesLoading: false,
+  routeLoading: false,
+  routeError: null,
+  facilitiesError: null,
+  needsFitBounds: false
+};
+
+function resetMapState(){
+  mapState.facilities = [];
+  mapState.nearestFacility = null;
+  mapState.currentRoute = null;
+  mapState.selectedFacilityId = null;
+  mapState.lastGpsKey = '';
+  mapState.lastFetchTime = 0;
+  mapState.routeError = null;
+  mapState.facilitiesError = null;
+  if (mapState.facilityLayer) mapState.facilityLayer.clearLayers();
+  if (mapState.routeLayer) mapState.routeLayer.clearLayers();
+  mapState.facilityMarkers.clear();
 }
+
+async function fetchNearbyFacilities(devId) {
+  if (mapState.facilitiesLoading) return;
+  mapState.facilitiesLoading = true;
+  mapState.facilitiesError = null;
+  try {
+    const res = await api('v1/nearby-cooling?device_id=' + encodeURIComponent(devId));
+    mapState.facilities = res.facilities || [];
+    mapState.nearestFacility = mapState.facilities.length > 0 ? mapState.facilities[0] : null;
+    mapState.facilitiesError = mapState.facilities.length === 0 ? (res.message || 'No verified nearby cooling facility found') : null;
+    renderFacilityMarkers();
+    updateMapSidebar();
+  } catch (err) {
+    mapState.facilities = [];
+    mapState.nearestFacility = null;
+    mapState.facilitiesError = 'Nearby facility service temporarily unavailable';
+    updateMapSidebar();
+  } finally {
+    mapState.facilitiesLoading = false;
+  }
+}
+
+async function calculateRoute(devId, facilityId) {
+  if (mapState.routeLoading) return;
+  mapState.routeLoading = true;
+  mapState.routeError = null;
+  mapState.selectedFacilityId = facilityId;
+  updateMapSidebar();
+  try {
+    const res = await api(`v1/route-to-cooling?device_id=${encodeURIComponent(devId)}&facility_id=${encodeURIComponent(facilityId)}`);
+    mapState.currentRoute = res;
+    mapState.needsFitBounds = true;
+    renderFacilityMarkers();
+    renderRouteLayer();
+    updateMapSidebar();
+  } catch (err) {
+    mapState.routeError = 'Route unavailable. Facility location still shown';
+    updateMapSidebar();
+  } finally {
+    mapState.routeLoading = false;
+  }
+}
+
+function renderFacilityMarkers() {
+  if (!mapState.instance || !mapState.facilityLayer || typeof L === 'undefined') return;
+  mapState.facilityLayer.clearLayers();
+  mapState.facilityMarkers.clear();
+
+  mapState.facilities.forEach(f => {
+    const isSelected = (mapState.currentRoute?.destination?.id === f.id) || (mapState.selectedFacilityId === f.id);
+    const facilityIcon = L.divIcon({
+      className: '',
+      html: `<div class="facility-pin-wrapper ${isSelected ? 'active-dest' : ''}"><span>❄</span></div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 26],
+      popupAnchor: [0, -26]
+    });
+
+    const marker = L.marker([f.latitude, f.longitude], { icon: facilityIcon });
+    marker.bindPopup(`
+      <div style="min-width:180px;">
+        <strong>${esc(f.name)}</strong><br>
+        <span style="color:#527362;font-size:11px;">${fmt(f.distance_km, 2)} km away</span><br>
+        ${f.address ? `<span style="color:#6e8576;font-size:10px;display:block;margin:3px 0;">${esc(f.address)}</span>` : ''}
+        <span style="font-size:9px;color:#859b8d;text-transform:uppercase;">Source: ${esc(f.source)}</span><br>
+        <button class="btn-route-action btn-popup-route" data-id="${esc(f.id)}" style="margin-top:8px;width:100%;">
+          ${isSelected ? 'Active destination' : 'Route here'}
+        </button>
+      </div>
+    `);
+    marker.addTo(mapState.facilityLayer);
+    mapState.facilityMarkers.set(f.id, marker);
+  });
+}
+
+function renderRouteLayer() {
+  if (!mapState.instance || !mapState.routeLayer || typeof L === 'undefined') return;
+  mapState.routeLayer.clearLayers();
+
+  if (mapState.currentRoute && Array.isArray(mapState.currentRoute.route) && mapState.currentRoute.route.length > 0) {
+    const poly = L.polyline(mapState.currentRoute.route, {
+      color: '#b23b2b',
+      weight: 5,
+      opacity: 0.88,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(mapState.routeLayer);
+
+    if (mapState.needsFitBounds) {
+      mapState.instance.fitBounds(poly.getBounds(), { padding: [40, 40] });
+      mapState.needsFitBounds = false;
+    }
+  }
+}
+
+function updateMapSidebar() {
+  const sidebar = $('map-sidebar-content');
+  if (!sidebar) return;
+  const latest = cache.latest;
+  const t = latest?.telemetry?.payload;
+  const d = latest?.telemetry?.decision || {};
+  const isHardware = (t?.mode || appMode) === 'HARDWARE';
+  const edgeState = t?.system_state || 'NORMAL';
+  const authoritativeState = isHardware ? edgeState : (d.state || edgeState || 'NORMAL');
+  const isReroutingActive = authoritativeState === 'CRITICAL_FAILURE' || authoritativeState === 'REROUTING';
+  const nearest = mapState.nearestFacility;
+  const route = mapState.currentRoute;
+
+  let nearestHtml = '';
+  if (nearest) {
+    const isSelected = route?.destination?.id === nearest.id;
+    nearestHtml = `<div class="nearest-facility-box">
+      <strong>${esc(nearest.name)}</strong>
+      <p>${fmt(nearest.distance_km, 2)} km away · ${esc(nearest.source)}</p>
+      <button class="btn-route-action ${isSelected ? 'active' : ''}" id="btn-route-nearest" data-id="${esc(nearest.id)}">
+        ${isSelected ? 'Active destination' : 'Route to nearest'}
+      </button>
+    </div>`;
+  } else if (mapState.facilitiesLoading) {
+    nearestHtml = `<div class="nearest-facility-box"><p>Searching verified cooling facilities...</p></div>`;
+  } else {
+    nearestHtml = `<div class="nearest-facility-box"><p>${esc(mapState.facilitiesError || 'No verified nearby cooling facility found')}</p></div>`;
+  }
+
+  const facilityListHtml = mapState.facilities.slice(0, 5).map(f => {
+    const isSelected = route?.destination?.id === f.id;
+    return `<div class="facility-card-item ${isSelected ? 'selected' : ''}">
+      <div class="facility-info">
+        <span class="facility-title" title="${esc(f.name)}">${esc(f.name)}</span>
+        <div class="facility-meta">${fmt(f.distance_km, 2)} km · ${esc(f.source)}</div>
+      </div>
+      <button class="btn-route-action ${isSelected ? 'active' : ''} btn-list-route" data-id="${esc(f.id)}">
+        ${isSelected ? 'Routed' : 'Route'}
+      </button>
+    </div>`;
+  }).join('');
+
+  sidebar.innerHTML = `
+    <div class="map-stats-card">
+      <h3>Telemetry & Navigation</h3>
+      <div class="map-stat-row"><span>Device:</span><strong>${esc(device)}</strong></div>
+      <div class="map-stat-row"><span>GPS:</span><strong>FIX (${t?.gps?.satellites || 0} sats)</strong></div>
+      <div class="map-stat-row"><span>Coordinates:</span><strong>${fmt(t?.gps?.latitude, 4)}, ${fmt(t?.gps?.longitude, 4)}</strong></div>
+      <div class="map-stat-row"><span>Rerouting:</span><strong>${isReroutingActive ? 'ACTIVE' : (mapState.facilities.length ? 'READY' : 'UNAVAILABLE')}</strong></div>
+      ${route ? `
+        <div class="map-stat-row"><span>Destination:</span><strong>${esc(route.destination?.name || 'Cooling Facility')}</strong></div>
+        <div class="map-stat-row"><span>Distance:</span><strong>${fmt(route.distance_km, 1)} km</strong></div>
+        <div class="map-stat-row"><span>Est. drive:</span><strong>${fmt(route.duration_min, 0)} min</strong></div>
+      ` : ''}
+      ${mapState.routeError ? `<div class="map-stat-row" style="color:var(--danger,#b23b2b);font-size:10px;">${esc(mapState.routeError)}</div>` : ''}
+    </div>
+
+    <div class="map-stats-card">
+      <h3>Nearest Cooling Facility</h3>
+      ${nearestHtml}
+    </div>
+
+    ${mapState.facilities.length ? `
+      <div class="map-stats-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <h3 style="margin:0;">Discovered Facilities (${mapState.facilities.length})</h3>
+          ${route ? `<button id="btn-clear-route" class="secondary" style="padding:2px 6px;font-size:9px;">Clear route</button>` : ''}
+        </div>
+        <div class="facility-list">
+          ${facilityListHtml}
+        </div>
+      </div>
+    ` : ''}
+  `;
+}
+
+function map(){
+  const latest = cache.latest;
+  const t = latest?.telemetry?.payload;
+  const d = latest?.telemetry?.decision || {};
+  const isHardware = (t?.mode || appMode) === 'HARDWARE';
+  const isFresh = !isHardware || isLiveHardwareFresh();
+
+  if (isHardware && !isFresh) {
+    return `<section class="card map-panel">
+      <div class="card-head">
+        <div>
+          <h2>GPS & Emergency Rerouting</h2>
+          <p class="card-sub">Real ESP32 GPS tracking & cooling facility discovery</p>
+        </div>
+        ${badge('HARDWARE OFFLINE', 'danger')}
+      </div>
+      <div class="map-empty-box danger">
+        <h3>HARDWARE OFFLINE · NO LIVE GPS DATA</h3>
+        <p>Telemetry connection lost (> 15 seconds). Live satellite coordinates and active navigation are disabled to prevent displaying stale tracking.</p>
+      </div>
+    </section>`;
+  }
+
+  if (!t?.gps?.fix || !Number.isFinite(t?.gps?.latitude) || !Number.isFinite(t?.gps?.longitude)) {
+    return `<section class="card map-panel">
+      <div class="card-head">
+        <div>
+          <h2>GPS & Emergency Rerouting</h2>
+          <p class="card-sub">Real ESP32 GPS tracking & cooling facility discovery</p>
+        </div>
+        ${badge('GPS NO FIX', 'warn')}
+      </div>
+      <div class="map-empty-box warn">
+        <h3>GPS NO FIX · Waiting for satellite lock</h3>
+        <p>NEO-6M receiver has acquired <strong>${t?.gps?.satellites || 0}</strong> satellites. Map navigation requires a valid 3D GPS fix. No coordinates or cooling stations are fabricated.</p>
+      </div>
+    </section>`;
+  }
+
+  const edgeState = t.system_state || 'NORMAL';
+  const authoritativeState = isHardware ? edgeState : (d.state || edgeState || 'NORMAL');
+  const isReroutingActive = authoritativeState === 'CRITICAL_FAILURE' || authoritativeState === 'REROUTING';
+  const rerouteBadge = isReroutingActive ? badge('REROUTING ACTIVE', 'danger') : badge('REROUTING READY', 'success');
+
+  const nearest = mapState.nearestFacility;
+  const route = mapState.currentRoute;
+
+  let nearestHtml = '';
+  if (nearest) {
+    const isSelected = route?.destination?.id === nearest.id;
+    nearestHtml = `<div class="nearest-facility-box">
+      <strong>${esc(nearest.name)}</strong>
+      <p>${fmt(nearest.distance_km, 2)} km away · ${esc(nearest.source)}</p>
+      <button class="btn-route-action ${isSelected ? 'active' : ''}" id="btn-route-nearest" data-id="${esc(nearest.id)}">
+        ${isSelected ? 'Active destination' : 'Route to nearest'}
+      </button>
+    </div>`;
+  } else if (mapState.facilitiesLoading) {
+    nearestHtml = `<div class="nearest-facility-box"><p>Searching verified cooling facilities...</p></div>`;
+  } else {
+    nearestHtml = `<div class="nearest-facility-box"><p>${esc(mapState.facilitiesError || 'No verified nearby cooling facility found')}</p></div>`;
+  }
+
+  const facilityListHtml = mapState.facilities.slice(0, 5).map(f => {
+    const isSelected = route?.destination?.id === f.id;
+    return `<div class="facility-card-item ${isSelected ? 'selected' : ''}">
+      <div class="facility-info">
+        <span class="facility-title" title="${esc(f.name)}">${esc(f.name)}</span>
+        <div class="facility-meta">${fmt(f.distance_km, 2)} km · ${esc(f.source)}</div>
+      </div>
+      <button class="btn-route-action ${isSelected ? 'active' : ''} btn-list-route" data-id="${esc(f.id)}">
+        ${isSelected ? 'Routed' : 'Route'}
+      </button>
+    </div>`;
+  }).join('');
+
+  return `<section class="card map-panel">
+    <div class="card-head">
+      <div>
+        <h2>GPS & Emergency Rerouting</h2>
+        <p class="card-sub">Live OpenStreetMap navigation · Real GPS telemetry</p>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        ${rerouteBadge}
+        ${badge(`GPS LIVE · ${t.gps.satellites || 0} sats`, 'success')}
+      </div>
+    </div>
+    <div class="map-layout">
+      <div class="map-view-container">
+        <div id="leaflet-map" class="leaflet-map-host"></div>
+      </div>
+      <div class="map-sidebar" id="map-sidebar-content">
+        <div class="map-stats-card">
+          <h3>Telemetry & Navigation</h3>
+          <div class="map-stat-row"><span>Device:</span><strong>${esc(device)}</strong></div>
+          <div class="map-stat-row"><span>GPS:</span><strong>FIX (${t.gps.satellites || 0} sats)</strong></div>
+          <div class="map-stat-row"><span>Coordinates:</span><strong>${fmt(t.gps.latitude, 4)}, ${fmt(t.gps.longitude, 4)}</strong></div>
+          <div class="map-stat-row"><span>Rerouting:</span><strong>${isReroutingActive ? 'ACTIVE' : (mapState.facilities.length ? 'READY' : 'UNAVAILABLE')}</strong></div>
+          ${route ? `
+            <div class="map-stat-row"><span>Destination:</span><strong>${esc(route.destination?.name || 'Cooling Facility')}</strong></div>
+            <div class="map-stat-row"><span>Distance:</span><strong>${fmt(route.distance_km, 1)} km</strong></div>
+            <div class="map-stat-row"><span>Est. drive:</span><strong>${fmt(route.duration_min, 0)} min</strong></div>
+          ` : ''}
+          ${mapState.routeError ? `<div class="map-stat-row" style="color:var(--danger,#b23b2b);font-size:10px;">${esc(mapState.routeError)}</div>` : ''}
+        </div>
+
+        <div class="map-stats-card">
+          <h3>Nearest Cooling Facility</h3>
+          ${nearestHtml}
+        </div>
+
+        ${mapState.facilities.length ? `
+          <div class="map-stats-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <h3 style="margin:0;">Discovered Facilities (${mapState.facilities.length})</h3>
+              ${route ? `<button id="btn-clear-route" class="secondary" style="padding:2px 6px;font-size:9px;">Clear route</button>` : ''}
+            </div>
+            <div class="facility-list">
+              ${facilityListHtml}
+            </div>
+          </div>
+        ` : ''}
+      </div>
+    </div>
+  </section>`;
+}
+
+function syncMap() {
+  const container = $('leaflet-map');
+  const latest = cache.latest;
+  const t = latest?.telemetry?.payload;
+  const d = latest?.telemetry?.decision || {};
+  const isHardware = (t?.mode || appMode) === 'HARDWARE';
+  const isFresh = !isHardware || isLiveHardwareFresh();
+  const hasGpsFix = !!(t?.gps?.fix && Number.isFinite(t?.gps?.latitude) && Number.isFinite(t?.gps?.longitude));
+
+  if (!container || !isFresh || !hasGpsFix || !device) {
+    if (mapState.instance) {
+      try { mapState.instance.remove(); } catch(e) {}
+      mapState.instance = null;
+      mapState.containerEl = null;
+      mapState.vehicleMarker = null;
+      mapState.facilityMarkers.clear();
+      mapState.facilityLayer = null;
+      mapState.routeLayer = null;
+    }
+    return;
+  }
+
+  if (typeof L === 'undefined') {
+    return;
+  }
+
+  const lat = t.gps.latitude;
+  const lon = t.gps.longitude;
+
+  if (!mapState.instance || mapState.containerEl !== container) {
+    if (mapState.instance) {
+      try { mapState.instance.remove(); } catch(e) {}
+    }
+    mapState.instance = L.map(container, {
+      zoomControl: true,
+      attributionControl: true
+    }).setView([lat, lon], 13);
+
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>'
+    }).addTo(mapState.instance);
+
+    mapState.facilityLayer = L.layerGroup().addTo(mapState.instance);
+    mapState.routeLayer = L.layerGroup().addTo(mapState.instance);
+    mapState.containerEl = container;
+    mapState.vehicleMarker = null;
+    mapState.facilityMarkers.clear();
+
+    setTimeout(() => {
+      if (mapState.instance) mapState.instance.invalidateSize();
+    }, 150);
+  }
+
+  const vehicleIcon = L.divIcon({
+    className: '',
+    html: '<div class="vehicle-marker-wrapper"><div class="vehicle-marker-pulse"></div><div class="vehicle-marker-dot"></div></div>',
+    iconSize: [26, 26],
+    iconAnchor: [13, 13]
+  });
+
+  const popupContent = `<strong>Cold-chain vehicle</strong><br>Device: ${esc(device)}<br>GPS: LIVE<br>Satellites: ${t.gps.satellites || 0}<br>Last update: ${clock(latest?.timestamp)}`;
+
+  if (!mapState.vehicleMarker) {
+    mapState.vehicleMarker = L.marker([lat, lon], { icon: vehicleIcon, zIndexOffset: 1000 }).addTo(mapState.instance);
+    mapState.vehicleMarker.bindPopup(popupContent);
+  } else {
+    mapState.vehicleMarker.setLatLng([lat, lon]);
+    mapState.vehicleMarker.setPopupContent(popupContent);
+  }
+
+  const gpsKey = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+  const now = Date.now();
+  const timeSinceFetch = now - mapState.lastFetchTime;
+  const isGpsMoved = mapState.lastGpsKey !== gpsKey;
+  const isDeviceChanged = mapState.activeDeviceId !== device;
+
+  if (isDeviceChanged || isGpsMoved || (mapState.facilities.length === 0 && !mapState.facilitiesLoading && timeSinceFetch > 10000)) {
+    mapState.activeDeviceId = device;
+    mapState.lastGpsKey = gpsKey;
+    mapState.lastFetchTime = now;
+    fetchNearbyFacilities(device);
+  } else {
+    renderFacilityMarkers();
+  }
+
+  const edgeState = t.system_state || 'NORMAL';
+  const authoritativeState = isHardware ? edgeState : (d.state || edgeState || 'NORMAL');
+  const isCriticalReroute = authoritativeState === 'CRITICAL_FAILURE' || authoritativeState === 'REROUTING';
+
+  if (isCriticalReroute) {
+    if (!mapState.currentRoute && mapState.nearestFacility && !mapState.routeLoading) {
+      calculateRoute(device, mapState.nearestFacility.id);
+    }
+  }
+
+  renderRouteLayer();
+}
+
+document.addEventListener('click', e => {
+  const routeBtn = e.target.closest('.btn-route-action, .btn-popup-route, .btn-list-route, #btn-route-nearest');
+  if (routeBtn) {
+    e.preventDefault();
+    const facilityId = routeBtn.dataset.id;
+    if (device && facilityId) {
+      calculateRoute(device, facilityId);
+    }
+    return;
+  }
+  const clearBtn = e.target.closest('#btn-clear-route');
+  if (clearBtn) {
+    e.preventDefault();
+    mapState.currentRoute = null;
+    mapState.selectedFacilityId = null;
+    mapState.needsFitBounds = false;
+    renderFacilityMarkers();
+    renderRouteLayer();
+    updateMapSidebar();
+    return;
+  }
+});
 
 function table(headers,rows){
   return `<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
@@ -664,6 +1107,16 @@ function render(){
     return;
   }
 
+  // Preserve existing map DOM node across periodic renders
+  const existingMap = document.getElementById('leaflet-map');
+  let detachedMap = null;
+  if ((page === 'overview' || page === 'routing') && existingMap && mapState.instance) {
+    detachedMap = existingMap;
+    if (detachedMap.parentNode) {
+      detachedMap.parentNode.removeChild(detachedMap);
+    }
+  }
+
   let html='';
   if(page==='overview')html=kpis()+`<div class="two-col">${chartCard('chamber_temp_c','Chamber thermal trend','°C',true)}${control()}</div>`+risks()+`<div class="two-col equal">${timeline(5)}${map()}</div>`;
   if(page==='live')html=kpis()+`<div class="two-col equal">${chartCard('chamber_temp_c','Chamber temperature (DS18B20)','°C',true)}${chartCard('heatsink_temp_c','Heatsink temperature (DS18B20)','°C')}${chartCard('sht31_temp_c','Ambient temperature (SHT31)','°C')}${chartCard('humidity_pct','Humidity (SHT31)','%')}${chartCard('primary_current_a','Primary current (ACS712)','A')}</div>`;
@@ -690,18 +1143,45 @@ function render(){
     ];
     html=`<div class="equipment">${equipList.map(([a,b,c])=>`<section class="card">${badge(appMode==='HARDWARE'?'HARDWARE MODE':'SIMULATION','neutral')}<h2>${esc(a)}</h2><h3>${esc(b)}</h3><p>${c.includes('<div')?c:esc(c)}</p></section>`).join('')}</div>`;
   }
-  if(page==='routing')html=map()+`<section class="card"><h2>Facility catalogue</h2><p class="card-sub">Demo records are fictional. Real hardware uses VERIFIED facilities only.</p>${table(['Facility','Available','Temperature °C','Capacity kg','Source'],(cache.warehouses||[]).map(w=>[w.name,w.available?'Yes':'No',w.minimum_temperature+' to '+w.maximum_temperature,w.capacity,w.source]))}</section>`;
+  if(page==='routing'){
+    const verifiedSection = mapState.facilities.length ? `<section class="card"><h2>Discovered nearby cooling facilities</h2><p class="card-sub">Real-time geospatial query (${esc(mapState.facilities[0]?.source || 'GIS')}) centered at active GPS coordinates.</p>${table(['Facility','Distance','Latitude','Longitude','Source','Address'],mapState.facilities.map(f=>[f.name,fmt(f.distance_km,2)+' km',fmt(f.latitude,4),fmt(f.longitude,4),f.source,f.address||'—']))}</section>` : '';
+    html=map()+verifiedSection+`<section class="card"><h2>Facility catalogue</h2><p class="card-sub">Demo records are fictional. Real hardware uses VERIFIED facilities only.</p>${table(['Facility','Available','Temperature °C','Capacity kg','Source'],(cache.warehouses||[]).map(w=>[w.name,w.available?'Yes':'No',w.minimum_temperature+' to '+w.maximum_temperature,w.capacity,w.source]))}</section>`;
+  }
   if(page==='alerts')html=`<section class="card"><h2>Recorded faults</h2>${(cache.faults||[]).length?table(['Time','Mode','State','Reason','Source','Lifecycle'],cache.faults.map(e=>[clock(e.timestamp),e.payload.mode||'SYSTEM',e.payload.new_state,e.payload.reason,e.payload.source,e.payload.resolved?(e.payload.resolution||'RESOLVED'):'ACTIVE'])):'<div class="empty">No fault events recorded for this device.</div>'}</section>`;
   if(page==='history')html=`<section class="card"><div class="card-head"><h2>Telemetry history</h2><button id="download-history" class="secondary">Export JSON</button></div>${table(['Acquired','Sequence','Chamber °C','Current A','Observed state','Decision','Mode','Archived'],(cache.history||[]).map(r=>[clock(r.timestamp),r.sequence,fmt(r.payload.chamber_temp_c),fmt(r.payload.primary_current_a),r.payload.system_state,r.decision.state,r.mode,r.archived?'Yes':'No']))}</section>`;
-  if(page==='analytics'){const m=system.model||{};html=`<section class="card"><div class="card-head"><h2>Held-out test results</h2>${badge(m.training_provenance||'UNAVAILABLE','warn')}</div>${table(['Estimator','Precision','Recall','F1','ROC AUC','Test samples'],Object.entries(m.test||{}).map(([name,v])=>[name,fmt(v.precision,3),fmt(v.recall,3),fmt(v.f1,3),fmt(v.roc_auc,3),v.samples]))}<p class="card-sub">${esc(m.split_method)}. Test evaluation on held-out datasets.</p></section><div class="three-col">${Object.entries(m.test||{}).map(([n,v])=>`<section class="card"><h2>${esc(n)} confusion matrix</h2>${table(['Actual / Predicted','Normal','Anomaly'],[['Normal',...v.confusion_matrix[0]],['Anomaly',...v.confusion_matrix[1]]])}</section>`).join('')}</div>`;}
+  if(page==='analytics'){const m=system.model||{};html=`<section class="card"><div class="card-head"><h2>Held-out test results</h2>${badge(m.training_provenance||'UNAVAILABLE','warn')}</div>${table(['Estimator','Precision','Recall','F1','ROC AUC','Test samples'],Object.entries(m.test||{}).map(([name,v])=>[name,fmt(v.precision,3),fmt(v.recall,3),fmt(v.roc_auc,3),v.samples]))}<p class="card-sub">${esc(m.split_method)}. Test evaluation on held-out datasets.</p></section><div class="three-col">${Object.entries(m.test||{}).map(([n,v])=>`<section class="card"><h2>${esc(n)} confusion matrix</h2>${table(['Actual / Predicted','Normal','Anomaly'],[['Normal',...v.confusion_matrix[0]],['Anomaly',...v.confusion_matrix[1]]])}</section>`).join('')}</div>`;}
   if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health & data provenance</h2>${(t?.mode||appMode)==='HARDWARE'?row('Chamber source',t?.chamber_source||'DERIVED'):''}${(t?.mode||appMode)==='HARDWARE'&&t?.chamber_formula?row('Chamber formula',t.chamber_formula):''}${(t?.mode||appMode)==='HARDWARE'&&t?.raw_chamber_temp_c!=null?row('Raw DS18B20 chamber',fmt(t.raw_chamber_temp_c,2)+' °C'):''}${(t?.mode||appMode)==='HARDWARE'?row('Heatsink source','DS18B20 (physical probe)'):''}${(t?.mode||appMode)==='HARDWARE'?row('Current input source',t?.current_source||'EMULATED'):''}${(t?.mode||appMode)==='HARDWARE'?row('ACS712 calibration',t?.current_calibrated?'CALIBRATED':'PENDING'):''}${(t?.mode||appMode)==='HARDWARE'?row('Backup source',t?.backup_source||'VIRTUAL'):''}${(t?.mode||appMode)==='HARDWARE'?row('Physical backup stage',t?.backup_commissioned?'COMMISSIONED':'NOT COMMISSIONED'):''}${(t?.mode||appMode)==='HARDWARE'?row('Cooling control mode',t?.cooling_control_mode||'MANUAL_SMPS'):''}${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'current (ACS712)' : k, k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'PENDING CALIBRATION' : (v?'VALID':'INVALID'))).join('')}${row('GPS',t?.gps?.fix?'FIX':'NO FIX')}${t?.vibration_detected !== undefined ? row('Vibration', t.vibration_detected ? 'DETECTED' : 'NORMAL') : ''}</section></div>`;
   if(page==='validation')html=`<section class="card"><div class="card-head"><div><h2>Physical measurement register</h2><p class="card-sub">Values stay empty until hardware evidence is submitted.</p></div><button id="export-validation" class="secondary">Export CSV</button></div>${table(['Measurement','Value','Status','Evidence source'],(cache.validation?.metrics||[]).map(m=>[m.metric,m.value??'—',m.status,m.measurement_source]))}</section>`;
   if(page==='archive')html=archiveView();
   
   $('content').innerHTML=html;
+
+  // Re-attach detached map container if present
+  if (detachedMap) {
+    const mountContainer = document.querySelector('.map-view-container');
+    if (mountContainer) {
+      const placeholder = document.getElementById('leaflet-map');
+      if (placeholder && placeholder !== detachedMap) {
+        placeholder.replaceWith(detachedMap);
+      } else if (!placeholder) {
+        mountContainer.appendChild(detachedMap);
+      }
+    } else {
+      if (mapState.instance) {
+        try { mapState.instance.remove(); } catch(e) {}
+        mapState.instance = null;
+        mapState.containerEl = null;
+        mapState.vehicleMarker = null;
+        mapState.facilityMarkers.clear();
+      }
+    }
+  }
+
   if(page==='archive')bindArchive();
   if($('download-history'))$('download-history').onclick=async()=>{try{const base=apiUrl?apiUrl.replace(/\/$/,''):'';const r=await fetch(base+'/api/history/export?device_id='+encodeURIComponent(device),{headers:{Authorization:'Bearer '+token}});if(!r.ok)throw Error('History export failed');download(await r.text(),device+'-telemetry.json','application/json');}catch(e){$('notice').textContent=e.message;}};
   if($('export-validation'))$('export-validation').onclick=async()=>{try{const base=apiUrl?apiUrl.replace(/\/$/,''):'';const r=await fetch(base+'/api/validation/export?format=csv&device_id='+encodeURIComponent(device),{headers:{Authorization:'Bearer '+token}});if(!r.ok)throw Error('Export failed');download(await r.text(),'hardware-validation.csv','text/csv');}catch(e){$('notice').textContent=e.message;}};
+
+  syncMap();
 }
 
 function download(data,name,type){

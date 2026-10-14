@@ -9,4 +9,5 @@ runtime/
 firmware/esp32_s3/secrets.h
 firmware/esp32_s3/commissioning.h
 dashboard/dist/
+node_modules/
 .env

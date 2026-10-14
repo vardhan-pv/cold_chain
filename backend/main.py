@@ -16,6 +16,7 @@ from backend import commands
 from backend.archive import import_legacy, archive_rows
 from backend.api.compatibility import router_for
 from backend.schemas import CommandAcknowledgement,ResetReconciliation,BackupControlRequest
+from backend.gis import get_nearby_cooling_facilities, get_driving_route
 
 ROOT=Path(__file__).resolve().parents[1]
 log=logging.getLogger('cold_chain')
@@ -102,7 +103,7 @@ def create_app(database_url=None,admin_token=None,models=None,run_simulation=Fal
         response.headers['Cache-Control']='no-store'
         response.headers['X-Frame-Options']='DENY'
         if request.url.path=='/':
-            response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+            response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.tile.openstreetmap.org https://tile.openstreetmap.org; connect-src 'self' *; frame-ancestors 'none'"
         return response
 
     def admin(authorization: str=Header(default='')):
@@ -142,6 +143,115 @@ def create_app(database_url=None,admin_token=None,models=None,run_simulation=Fal
         result=service.ingest(data)
         return {**result,'device_id':data.device_id,'sequence':data.sequence,
                 'stored':not result['duplicate'],'session_id':data.boot_id}
+
+    @app.get('/api/v1/nearby-cooling', dependencies=auth)
+    @app.get('/api/nearby-cooling', dependencies=auth)
+    def nearby_cooling(device_id: str):
+        dev_info = service.latest(device_id)
+        d = dev_info.get('device') or {}
+        t_row = dev_info.get('telemetry')
+        payload = t_row.get('payload', {}) if t_row else {}
+        gps = payload.get('gps') or {}
+
+        if d.get('mode') == 'HARDWARE' and dev_info.get('online') is False:
+            return {
+                'device_id': device_id,
+                'gps_fix': False,
+                'hardware_offline': True,
+                'facilities': [],
+                'message': 'HARDWARE OFFLINE: NO LIVE GPS DATA'
+            }
+
+        if not gps.get('fix') or gps.get('latitude') is None or gps.get('longitude') is None:
+            return {
+                'device_id': device_id,
+                'gps_fix': False,
+                'hardware_offline': False,
+                'facilities': [],
+                'message': 'GPS NO FIX: Waiting for satellite lock'
+            }
+
+        lat = float(gps['latitude'])
+        lon = float(gps['longitude'])
+        result = get_nearby_cooling_facilities(lat, lon, radius_km=35.0)
+        facilities = result['facilities']
+        nearest = facilities[0] if facilities else None
+
+        return {
+            'device_id': device_id,
+            'gps_fix': True,
+            'hardware_offline': False,
+            'current_location': {
+                'latitude': lat,
+                'longitude': lon,
+                'satellites': gps.get('satellites', 0),
+                'source': gps.get('source', 'GPS')
+            },
+            'facility_provider': result.get('facility_provider') or result.get('provider') or 'OVERPASS',
+            'facilities': facilities[:10],
+            'nearest_cooling_facility': nearest,
+            'message': 'Verified nearby cooling facilities retrieved' if facilities else 'No verified nearby cooling facility found'
+        }
+
+    @app.get('/api/v1/route-to-cooling', dependencies=auth)
+    @app.get('/api/route-to-cooling', dependencies=auth)
+    def route_to_cooling(
+        device_id: str,
+        facility_id: str | None = None,
+        dest_lat: float | None = None,
+        dest_lon: float | None = None,
+        dest_name: str | None = None
+    ):
+        dev_info = service.latest(device_id)
+        d = dev_info.get('device') or {}
+        t_row = dev_info.get('telemetry')
+        payload = t_row.get('payload', {}) if t_row else {}
+        gps = payload.get('gps') or {}
+
+        if d.get('mode') == 'HARDWARE' and dev_info.get('online') is False:
+            raise HTTPException(409, 'HARDWARE OFFLINE: NO LIVE GPS DATA')
+
+        if not gps.get('fix') or gps.get('latitude') is None or gps.get('longitude') is None:
+            raise HTTPException(422, 'GPS NO FIX: Waiting for satellite lock')
+
+        origin_lat = float(gps['latitude'])
+        origin_lon = float(gps['longitude'])
+
+        target_lat = dest_lat
+        target_lon = dest_lon
+        target_name = dest_name or 'Refrigerated Facility'
+
+        if target_lat is None or target_lon is None:
+            facilities = get_nearby_cooling_facilities(origin_lat, origin_lon)['facilities']
+            matched = next((f for f in facilities if f['id'] == facility_id), None) if facility_id else None
+            if matched:
+                target_lat = matched['latitude']
+                target_lon = matched['longitude']
+                target_name = matched['name']
+            elif facilities:
+                target_lat = facilities[0]['latitude']
+                target_lon = facilities[0]['longitude']
+                target_name = facilities[0]['name']
+                facility_id = facilities[0]['id']
+            else:
+                raise HTTPException(404, 'No verified nearby cooling facility available to route to')
+
+        route_info = get_driving_route(origin_lat, origin_lon, target_lat, target_lon)
+
+        return {
+            'device_id': device_id,
+            'destination': {
+                'id': facility_id,
+                'name': target_name,
+                'latitude': target_lat,
+                'longitude': target_lon
+            },
+            'route': route_info['route'],
+            'distance_km': route_info['distance_km'],
+            'duration_min': route_info['duration_min'],
+            'source': route_info['source'],
+            'road_route_available': route_info.get('road_route_available', False)
+        }
 
     @app.get('/api/latest',dependencies=auth)
     def latest(device_id:str):

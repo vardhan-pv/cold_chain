@@ -1,1 +1,1 @@
-{"name":"cold-chain-dashboard","version":"1.0.0","private":true,"type":"module","scripts":{"build":"node build.mjs"}}
+{"name":"cold-chain-dashboard","version":"1.0.0","private":true,"type":"module","scripts":{"build":"node build.mjs"},"dependencies":{"leaflet":"^1.9.4"}}
