@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Build dashboard static bundle
-RUN python -c "import shutil, pathlib; dest=pathlib.Path('dashboard/dist'); dest.mkdir(exist_ok=True); [shutil.copy2(f, dest/f.name) for f in pathlib.Path('dashboard/src').iterdir()]"
+RUN python -c "import shutil; shutil.copytree('dashboard/src', 'dashboard/dist', dirs_exist_ok=True)"
 
 ENV PORT=8000
 EXPOSE 8000

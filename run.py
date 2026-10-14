@@ -20,9 +20,7 @@ def main():
         secrets_path.write_text(json.dumps({'operator_token':token}))
         try:secrets_path.chmod(0o600)
         except OSError:pass
-    for f in (ROOT/'dashboard/src').iterdir():
-        dest=ROOT/'dashboard/dist';dest.mkdir(exist_ok=True)
-        shutil.copy2(f,dest/f.name)
+    shutil.copytree(ROOT/'dashboard/src', ROOT/'dashboard/dist', dirs_exist_ok=True)
     from backend.main import create_app
     import uvicorn
     app=create_app(admin_token=token,run_simulation=not args.no_simulator)
