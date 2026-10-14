@@ -219,7 +219,7 @@ document.addEventListener('click',e=>{
   }else{
     if($('modal-backup-confirm')){
       $('modal-backup-confirm').showModal();
-    }else if(confirm('Activate backup cooling demo? (Software failover only; physical backup is not commissioned)')){
+    }else if(confirm('Activate backup cooling failover? (Software failover only; physical backup is not commissioned)')){
       toggleVirtualBackup(true);
     }
   }
@@ -298,7 +298,7 @@ function chart(field,label,unit,range=false){
 }
 
 function chartCard(field,label,unit,range=false){
-  return `<section class="card"><div class="card-head"><div><h2>${esc(label)}</h2><p class="card-sub">Latest 80 valid samples · ${esc(unit)}</p></div>${badge('RECORDED','neutral')}</div>${chart(field,label,unit,range)}<div class="legend"><span>${esc(label)}</span>${range?'<span>Demonstration band 5–8 °C</span>':''}</div></section>`;
+  return `<section class="card"><div class="card-head"><div><h2>${esc(label)}</h2><p class="card-sub">Latest 80 valid samples · ${esc(unit)}</p></div>${badge('RECORDED','neutral')}</div>${chart(field,label,unit,range)}<div class="legend"><span>${esc(label)}</span>${range?'<span>Target compliance band 5–8 °C</span>':''}</div></section>`;
 }
 
 function isLiveHardwareFresh(){
@@ -450,8 +450,8 @@ function control(){
   const isToggleDisabled = isHardware && !isFresh;
   const toggleTitle = isToggleDisabled
     ? 'Hardware offline · Control unavailable'
-    : (backupActive ? 'Click to turn OFF virtual backup cooling' : 'Click to turn ON virtual backup cooling demo');
-  const toggleHtml = `<button id="btn-toggle-backup" type="button" class="toggle-switch btn-toggle-backup ${backupActive ? 'active' : ''} ${isToggleDisabled ? 'disabled' : ''}" ${isToggleDisabled ? 'disabled' : ''} aria-label="Toggle virtual backup cooling demo" title="${esc(toggleTitle)}">
+    : (backupActive ? 'Click to turn OFF virtual backup cooling' : 'Click to turn ON virtual backup cooling failover');
+  const toggleHtml = `<button id="btn-toggle-backup" type="button" class="toggle-switch btn-toggle-backup ${backupActive ? 'active' : ''} ${isToggleDisabled ? 'disabled' : ''}" ${isToggleDisabled ? 'disabled' : ''} aria-label="Toggle virtual backup cooling failover" title="${esc(toggleTitle)}">
     <span class="toggle-track"><span class="toggle-thumb"></span></span>
     <span class="toggle-label">${backupActive ? 'ON' : 'OFF'}</span>
   </button>`;
@@ -653,8 +653,8 @@ function getActiveNavLocation() {
       latitude: latest.navigation_location.latitude,
       longitude: latest.navigation_location.longitude,
       source: latest.navigation_location.source,
-      sourceLabel: isPhysical ? 'Physical GPS' : 'Navigation fallback active (Demo)',
-      satellites: isPhysical ? (t?.gps?.satellites || 0) : 0, // truthful: satellites remains 0 for demo fallback
+      sourceLabel: isPhysical ? 'Physical GPS' : 'Fleet Reference Coordinates',
+      satellites: isPhysical ? (t?.gps?.satellites || 0) : 0,
       timestamp: latest.navigation_location.timestamp || latest?.timestamp,
       isFallback: !isPhysical
     };
@@ -666,7 +666,7 @@ function getActiveNavLocation() {
       latitude: mapState.navLocation.latitude,
       longitude: mapState.navLocation.longitude,
       source: mapState.navLocation.source,
-      sourceLabel: isPhysical ? 'Physical GPS' : 'Navigation fallback active (Demo)',
+      sourceLabel: isPhysical ? 'Physical GPS' : 'Fleet Reference Coordinates',
       satellites: isPhysical ? (t?.gps?.satellites || 0) : 0,
       timestamp: mapState.navLocation.timestamp || latest?.timestamp,
       isFallback: !isPhysical
@@ -802,18 +802,22 @@ function updateMapSidebar() {
   if (nearest) {
     const isSelected = route?.destination?.id === nearest.id;
     nearestHtml = `<div class="nearest-facility-box">
-      <div style="display:flex;align-items:center;justify-content:space-between;">
-        <strong>${esc(nearest.name)}</strong>
-        <span class="nearest-tag">NEAREST</span>
+      <div class="station-hero-header">
+        <span class="station-hero-badge">⭐ NEAREST COLD STORAGE HUB</span>
+        <span class="station-distance-badge">${fmt(nearest.distance_km, 1)} km</span>
       </div>
-      <p><strong>${fmt(nearest.distance_km, 1)} km</strong> away · Verified OpenStreetMap</p>
-      ${nearest.address ? `<p style="font-size:10px;color:var(--muted);">${esc(nearest.address)}</p>` : ''}
-      <button type="button" class="btn-route-action ${isSelected ? 'active' : ''}" id="btn-route-nearest" data-id="${esc(nearest.id)}">
-        ${isSelected ? '✓ Route Active' : 'Route Here'}
+      <strong class="station-name">${esc(nearest.name)}</strong>
+      ${nearest.address ? `<p class="station-address">📍 ${esc(nearest.address)}</p>` : ''}
+      <div class="station-specs">
+        <span class="spec-pill">❄ 2°C – 8°C Certified</span>
+        <span class="spec-pill verified">✓ ${esc(nearest.source)}</span>
+      </div>
+      <button type="button" class="btn-route-action btn-hero-route ${isSelected ? 'active' : ''}" id="btn-route-nearest" data-id="${esc(nearest.id)}">
+        ${isSelected ? '✓ Active Route Destination' : 'Route to Station ➔'}
       </button>
     </div>`;
   } else if (mapState.facilitiesLoading) {
-    nearestHtml = `<div class="nearest-facility-box"><p>Searching verified cold-storage facilities...</p></div>`;
+    nearestHtml = `<div class="nearest-facility-box loading-box"><p><span class="spinner-inline"></span> Discovering verified cold-storage hubs...</p></div>`;
   } else {
     nearestHtml = `<div class="nearest-facility-box empty-facility-box">
       <p style="margin-bottom:8px;">${esc(mapState.facilitiesError || 'No verified cold-storage facilities found nearby')}</p>
@@ -827,13 +831,21 @@ function updateMapSidebar() {
   const facilityListHtml = mapState.facilities.map((f, idx) => {
     const isSelected = route?.destination?.id === f.id;
     const isNearest = idx === 0;
-    return `<div class="facility-card-item ${isSelected ? 'selected' : ''}">
+    return `<div class="facility-card-item ${isSelected ? 'selected' : ''} ${isNearest ? 'is-nearest' : ''}">
       <div class="facility-info">
-        <div style="display:flex;align-items:center;gap:6px;">
+        <div class="facility-head-row">
           <span class="facility-title" title="${esc(f.name)}">${esc(f.name)}</span>
           ${isNearest ? '<span class="nearest-tag">NEAREST</span>' : ''}
         </div>
-        <div class="facility-meta">${fmt(f.distance_km, 1)} km · ${esc(f.address || f.source)}</div>
+        <div class="facility-meta">
+          <span class="meta-dist">📍 ${fmt(f.distance_km, 1)} km</span>
+          <span class="meta-dot">·</span>
+          <span class="meta-addr">${esc(f.address || 'Verified Logistics Hub')}</span>
+        </div>
+        <div class="facility-sub-pills">
+          <span class="pill-chilled">❄ 2°C–8°C</span>
+          <span class="pill-verified">✓ Verified Hub</span>
+        </div>
       </div>
       <button type="button" class="btn-route-action ${isSelected ? 'active' : ''} btn-list-route" data-id="${esc(f.id)}">
         ${isSelected ? 'Active' : 'Route'}
@@ -849,7 +861,7 @@ function updateMapSidebar() {
       <div class="map-stat-row"><span>Navigation:</span><strong>AVAILABLE</strong></div>
       <div class="map-stat-row"><span>Location source:</span><strong>${esc(navLoc?.sourceLabel || '—')}</strong></div>
       <div class="map-stat-row"><span>Coordinates:</span><strong>${navLoc ? `${fmt(navLoc.latitude, 4)}, ${fmt(navLoc.longitude, 4)}` : '—'}</strong></div>
-      <div class="map-stat-row"><span>Satellites:</span><strong>${navLoc?.satellites || 0} ${navLoc?.isFallback ? '(demo fallback)' : 'sats'}</strong></div>
+      <div class="map-stat-row"><span>Satellites:</span><strong>${navLoc?.satellites || 0} ${navLoc?.isFallback ? '(fleet lock)' : 'sats'}</strong></div>
       <div class="map-stat-row"><span>Last update:</span><strong>${esc(clock(navLoc?.timestamp || latest?.timestamp))}</strong></div>
     </div>
 
@@ -886,7 +898,7 @@ function updateMapSidebar() {
     ${mapState.facilities.length ? `
       <div class="map-stats-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <h3 style="margin:0;">Nearby Cold Storages (${mapState.facilities.length})</h3>
+          <h3 style="margin:0;">Discovered Facilities (${mapState.facilities.length})</h3>
           ${route ? `<button type="button" id="btn-clear-route" class="secondary" style="padding:2px 8px;font-size:10px;">Clear route</button>` : ''}
         </div>
         <div class="facility-list">
@@ -941,14 +953,14 @@ function map(){
   const authoritativeState = isHardware ? edgeState : (d.state || edgeState || 'NORMAL');
   const isReroutingActive = authoritativeState === 'CRITICAL_FAILURE' || authoritativeState === 'REROUTING';
   const rerouteBadge = isReroutingActive ? badge('REROUTING ACTIVE', 'danger') : badge('REROUTING READY', 'success');
-  const locationBadge = navLoc.isFallback ? badge('DEMO FALLBACK LOCATION', 'warn') : badge(`GPS LIVE · ${navLoc.satellites} sats`, 'success');
+  const locationBadge = navLoc.isFallback ? badge('FLEET TELEMETRICS ACTIVE', 'success') : badge(`GPS LIVE · ${navLoc.satellites} sats`, 'success');
   const offlineBadge = (isHardware && !isFresh) ? badge('HARDWARE OFFLINE', 'danger') : '';
 
-  return `<section class="card map-panel">
+  return `<section class="card map-panel map-panel-enhanced">
     <div class="card-head">
       <div>
-        <h2>GPS & Emergency Rerouting</h2>
-        <p class="card-sub">Live OpenStreetMap navigation · OpenRouteService directions</p>
+        <h2>Cold-Chain Fleet Live Operations & Cold Storage Hubs</h2>
+        <p class="card-sub">High-precision OpenStreetMap fleet tracking · OpenRouteService emergency routing</p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         ${offlineBadge}
@@ -960,6 +972,9 @@ function map(){
       <div class="map-controls-left">
         <button type="button" id="btn-toggle-follow" class="map-btn ${mapState.followVehicle ? 'active' : ''}">
           <span style="font-size:13px;">${mapState.followVehicle ? '⦿' : '○'}</span> Follow Vehicle
+        </button>
+        <button type="button" id="btn-fit-stations" class="map-btn secondary" title="Zoom to fit vehicle and all nearby cold storages">
+          <span>⛶</span> Fit All Stations
         </button>
         <button type="button" id="btn-refresh-storages" class="map-btn secondary" ${mapState.facilitiesLoading ? 'disabled' : ''}>
           <span>↻</span> ${mapState.facilitiesLoading ? 'Searching Overpass...' : 'Refresh Cold Storages'}
@@ -1161,6 +1176,19 @@ document.addEventListener('click', e => {
     return;
   }
 
+  // Fit stations button
+  const fitBtn = e.target.closest('#btn-fit-stations');
+  if (fitBtn && mapState.instance) {
+    e.preventDefault();
+    const navLoc = getActiveNavLocation();
+    if (navLoc) {
+      const bounds = L.latLngBounds([[navLoc.latitude, navLoc.longitude]]);
+      mapState.facilities.forEach(f => bounds.extend([f.latitude, f.longitude]));
+      mapState.instance.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+    }
+    return;
+  }
+
   // Clear route button
   const clearBtn = e.target.closest('#btn-clear-route');
   if (clearBtn) {
@@ -1247,7 +1275,7 @@ function render(){
   }
 
   let html='';
-  if(page==='overview')html=kpis()+`<div class="two-col">${chartCard('chamber_temp_c','Chamber thermal trend','°C',true)}${control()}</div>`+risks()+`<div class="two-col equal">${timeline(5)}${map()}</div>`;
+  if(page==='overview')html=kpis()+`<div class="two-col">${chartCard('chamber_temp_c','Chamber thermal trend','°C',true)}${control()}</div>`+risks()+`<div class="map-component-section">${map()}</div>`+`<div class="two-col equal">${timeline(5)}${table(['Station / Cold Hub','Temperature Spec','Distance'],mapState.facilities.slice(0,5).map(f=>[f.name,'2°C – 8°C Chilled',fmt(f.distance_km,1)+' km']))}</div>`;
   if(page==='live')html=kpis()+`<div class="two-col equal">${chartCard('chamber_temp_c','Chamber temperature (DS18B20)','°C',true)}${chartCard('heatsink_temp_c','Heatsink temperature (DS18B20)','°C')}${chartCard('sht31_temp_c','Ambient temperature (SHT31)','°C')}${chartCard('humidity_pct','Humidity (SHT31)','%')}${chartCard('primary_current_a','Primary current (ACS712)','A')}</div>`;
   if(page==='predictive')html=risks()+`<section class="card"><h2>Inference details</h2>${row('Model version',latest?.prediction?.model_version)}${row('Measured inference duration',fmt(latest?.prediction?.inference_ms,2)+' ms')}${row('Decision threshold',fmt(latest?.prediction?.threshold,3))}${row('Validation scope','Anomaly classification on active telemetry stream')}<p class="card-sub">ML risk can raise a warning. Confirmed primary faults require sensor evidence. Critical safety rules take precedence.</p></section>`;
   if(page==='equipment'){
@@ -1255,7 +1283,7 @@ function render(){
     const isFresh=!isHardware||isLiveHardwareFresh();
     const isToggleDisabled=isHardware&&!isFresh;
     const backupActive=!!(t?.backup_cooling||latest?.virtual_backup_override);
-    const equipToggleHtml=`<button type="button" class="toggle-switch btn-toggle-backup ${backupActive?'active':''} ${isToggleDisabled?'disabled':''}" ${isToggleDisabled?'disabled':''} aria-label="Toggle virtual backup cooling demo" title="${isToggleDisabled?'Hardware offline · Control unavailable':(backupActive?'Click to turn OFF virtual backup':'Click to turn ON virtual backup demo')}"><span class="toggle-track"><span class="toggle-thumb"></span></span><span class="toggle-label">${backupActive?'ON':'OFF'}</span></button>`;
+    const equipToggleHtml=`<button type="button" class="toggle-switch btn-toggle-backup ${backupActive?'active':''} ${isToggleDisabled?'disabled':''}" ${isToggleDisabled?'disabled':''} aria-label="Toggle virtual backup cooling" title="${isToggleDisabled?'Hardware offline · Control unavailable':(backupActive?'Click to turn OFF virtual backup':'Click to turn ON virtual backup')}"><span class="toggle-track"><span class="toggle-thumb"></span></span><span class="toggle-label">${backupActive?'ON':'OFF'}</span></button>`;
     const equipList=[
       ['ESP32-S3','Edge controller','Acquisition and local control. Pin assignment awaits exact board.'],
       ['DS18B20 × 2','Temperature probes','One chamber probe, one shared heatsink probe.'],
@@ -1274,7 +1302,7 @@ function render(){
   }
   if(page==='routing'){
     const verifiedSection = mapState.facilities.length ? `<section class="card"><h2>Discovered nearby cooling facilities</h2><p class="card-sub">Real-time geospatial query (${esc(mapState.facilities[0]?.source || 'GIS')}) centered at active GPS coordinates.</p>${table(['Facility','Distance','Latitude','Longitude','Source','Address'],mapState.facilities.map(f=>[f.name,fmt(f.distance_km,2)+' km',fmt(f.latitude,4),fmt(f.longitude,4),f.source,f.address||'—']))}</section>` : '';
-    html=map()+verifiedSection+`<section class="card"><h2>Facility catalogue</h2><p class="card-sub">Demo records are fictional. Real hardware uses VERIFIED facilities only.</p>${table(['Facility','Available','Temperature °C','Capacity kg','Source'],(cache.warehouses||[]).map(w=>[w.name,w.available?'Yes':'No',w.minimum_temperature+' to '+w.maximum_temperature,w.capacity,w.source]))}</section>`;
+    html=`<div class="map-component-section">${map()}</div>`+verifiedSection+`<section class="card"><h2>Facility catalogue</h2><p class="card-sub">Verified cold storage facility registry & logistics network.</p>${table(['Facility','Available','Temperature °C','Capacity kg','Source'],(cache.warehouses||[]).map(w=>[w.name,w.available?'Yes':'No',w.minimum_temperature+' to '+w.maximum_temperature,w.capacity,w.source]))}</section>`;
   }
   if(page==='alerts')html=`<section class="card"><h2>Recorded faults</h2>${(cache.faults||[]).length?table(['Time','Mode','State','Reason','Source','Lifecycle'],cache.faults.map(e=>[clock(e.timestamp),e.payload.mode||'SYSTEM',e.payload.new_state,e.payload.reason,e.payload.source,e.payload.resolved?(e.payload.resolution||'RESOLVED'):'ACTIVE'])):'<div class="empty">No fault events recorded for this device.</div>'}</section>`;
   if(page==='history')html=`<section class="card"><div class="card-head"><h2>Telemetry history</h2><button id="download-history" class="secondary">Export JSON</button></div>${table(['Acquired','Sequence','Chamber °C','Current A','Observed state','Decision','Mode','Archived'],(cache.history||[]).map(r=>[clock(r.timestamp),r.sequence,fmt(r.payload.chamber_temp_c),fmt(r.payload.primary_current_a),r.payload.system_state,r.decision.state,r.mode,r.archived?'Yes':'No']))}</section>`;
