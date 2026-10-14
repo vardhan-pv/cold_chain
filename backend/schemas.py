@@ -143,6 +143,18 @@ class CommandAcknowledgement(Contract):
             raise ValueError('Acknowledgement violates the cooling interlock')
         return self
 
+class BackupControlRequest(Contract):
+    device_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,48}$')
+    enabled: bool
+
+class BackupControlResponse(Contract):
+    success: bool
+    device_id: str
+    backup_cooling: bool
+    backup_source: Literal['VIRTUAL'] = 'VIRTUAL'
+    backup_commissioned: bool = False
+    virtual_backup_override: bool
+
 class ResetReconciliation(Contract):
     boot_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,64}$')
     reason: str = Field(min_length=15, max_length=500)

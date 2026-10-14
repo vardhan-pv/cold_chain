@@ -172,6 +172,23 @@ int code = http.POST(jsonPayload);</pre>
     </form>
   </dialog>
 
+  <!-- Modal for Backup Cooling Demo Confirmation -->
+  <dialog id="modal-backup-confirm" class="modal">
+    <form method="dialog" class="modal-card">
+      <h2>Activate backup cooling demo?</h2>
+      <p class="card-sub">The physical backup Peltier stage is <strong>not commissioned</strong>. This switch activates the <strong>software/virtual failover state</strong> for demonstration.</p>
+      <div class="code-box" style="margin-top:14px;background:#f0f6f4;border-color:#c8ddd7;">
+        <p><strong>Backup source:</strong> <code>VIRTUAL</code></p>
+        <p><strong>Physical backup stage:</strong> <code>NOT COMMISSIONED</code></p>
+        <p><strong>Primary cooling:</strong> <code>Interlocked OFF</code></p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="btn-cancel-backup-demo" class="secondary">Cancel</button>
+        <button type="button" id="btn-confirm-backup-demo">Activate</button>
+      </div>
+    </form>
+  </dialog>
+
   <script type="module" src="/assets/app.js"></script>
 </body>
 </html>

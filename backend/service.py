@@ -69,8 +69,9 @@ class Service:
                 raise HTTPException(404,'Register the device before sending telemetry')
             if d.mode != t.mode:
                 raise HTTPException(409,'Device mode is immutable; register a separate device for hardware')
+            virtual_override = bool(d.controller.get('virtual_backup_override', False)) if d.controller else False
+            updates = {}
             if t.mode == 'HARDWARE':
-                updates = {}
                 if getattr(t, 'chamber_source', None) == 'DERIVED' and t.chamber_temp_c is None and t.heatsink_temp_c is not None:
                     updates['chamber_temp_c'] = round(t.heatsink_temp_c - 10.0, 2)
                     updates['chamber_formula'] = 'heatsink_temp_c - 10.0'
@@ -78,14 +79,24 @@ class Service:
                     # In MANUAL_SMPS mode the physical state is the GPIO6 switch, not GPIO16.
                     # Use manual_cooling_confirmed to drive emulated current truthfully.
                     if t.cooling_control_mode == 'MANUAL_SMPS' and t.manual_cooling_confirmed is not None:
-                        cooling_on = t.manual_cooling_confirmed
+                        cooling_on = t.manual_cooling_confirmed and not virtual_override
                     else:
-                        cooling_on = t.primary_cooling
+                        cooling_on = t.primary_cooling and not virtual_override
                     current_val = EMULATED_PRIMARY_CURRENT_A if cooling_on else EMULATED_IDLE_CURRENT_A
                     updates['primary_current_a'] = current_val
                     updates['current_calibrated'] = False
-                if updates:
-                    t = t.model_copy(update=updates)
+
+            if virtual_override:
+                updates['backup_cooling'] = True
+                updates['backup_source'] = 'VIRTUAL'
+                updates['backup_commissioned'] = False
+                updates['primary_cooling'] = False
+            elif t.mode == 'HARDWARE' and t.backup_source is None:
+                updates['backup_source'] = 'VIRTUAL'
+                updates['backup_commissioned'] = False
+
+            if updates:
+                t = t.model_copy(update=updates)
             old=s.scalar(select(TelemetryRow).where(TelemetryRow.device_id==t.device_id,
                 TelemetryRow.boot_id==t.boot_id,TelemetryRow.sequence==t.sequence))
             payload=t.model_dump(mode='json')
@@ -240,6 +251,86 @@ class Service:
                 'recovery_verified_in_hardware':False,'sensor_evidence':row.payload}))
             return {'reconciled':True,'state':decision['state'],'physical_command_sent':False}
 
+    def set_virtual_backup(self, device_id: str, enabled: bool):
+        """Operator manually controls the virtual backup cooling demonstration state."""
+        with self.lock, self.Session.begin() as s:
+            device = s.get(Device, device_id)
+            if not device:
+                raise HTTPException(404, 'Device not found')
+
+            row = s.scalar(select(TelemetryRow).where(
+                TelemetryRow.device_id == device_id,
+                TelemetryRow.archived == False
+            ).order_by(TelemetryRow.id.desc()).limit(1))
+
+            # Offline hardware check: if hardware is offline (>15s without telemetry), reject
+            if device.mode == 'HARDWARE':
+                now_utc = datetime.now(timezone.utc)
+                is_stale = False
+                if not device.last_seen or not row:
+                    is_stale = True
+                else:
+                    age_seen = (now_utc - datetime.fromisoformat(device.last_seen)).total_seconds()
+                    age_telem = (now_utc - datetime.fromisoformat(row.timestamp)).total_seconds()
+                    if age_seen > 15.0 or age_telem > 15.0:
+                        is_stale = True
+                if is_stale:
+                    raise HTTPException(409, 'Hardware is offline; cannot toggle live backup demonstration')
+
+            controller_snap = dict(device.controller) if device.controller else {}
+            controller_snap['virtual_backup_override'] = enabled
+            device.controller = controller_snap
+
+            effective_backup = enabled
+            effective_primary = False
+            prev_payload = {}
+            if row:
+                prev_payload = dict(row.payload)
+                payload = dict(row.payload)
+                auto_required = bool(payload.get('system_state') in ('BACKUP_ACTIVE', 'RECOVERY'))
+                effective_backup = enabled or auto_required
+                payload['backup_cooling'] = effective_backup
+                payload['backup_source'] = 'VIRTUAL'
+                payload['backup_commissioned'] = False
+                if enabled:
+                    payload['primary_cooling'] = False
+                    effective_primary = False
+                else:
+                    if payload.get('cooling_control_mode') == 'MANUAL_SMPS':
+                        effective_primary = bool(payload.get('manual_cooling_confirmed', False)) and not auto_required
+                    else:
+                        effective_primary = bool(payload.get('primary_cooling', False)) and not auto_required
+                    payload['primary_cooling'] = effective_primary
+                row.payload = payload
+                s.add(row)
+
+            # Record Self-Healing Event
+            event_record = {
+                'previous_state': controller_snap.get('state', 'NORMAL'),
+                'new_state': 'BACKUP_ACTIVE' if enabled else controller_snap.get('state', 'NORMAL'),
+                'reason': 'Backup takeover activated' if enabled else 'Backup takeover cleared',
+                'source': 'Manual dashboard command',
+                'trigger': 'Manual dashboard command',
+                'backup_source': 'VIRTUAL',
+                'state': 'ACTIVE' if enabled else 'CLEARED',
+                'resolved': not enabled,
+                'mode': device.mode,
+                'result': 'VIRTUAL_BACKUP_MANUALLY_ACTIVATED' if enabled else 'VIRTUAL_BACKUP_MANUALLY_DEACTIVATED',
+                'action': {'primary_cooling': effective_primary, 'backup_cooling': effective_backup},
+                'recovery_verified_in_hardware': False,
+                'sensor_evidence': row.payload if row else prev_payload
+            }
+            s.add(HealingEvent(device_id=device_id, timestamp=utc(), payload=event_record))
+
+            return {
+                'success': True,
+                'device_id': device_id,
+                'backup_cooling': effective_backup,
+                'backup_source': 'VIRTUAL',
+                'backup_commissioned': False,
+                'virtual_backup_override': enabled
+            }
+
     def latest(self,device_id):
         with self.Session() as s:
             d=s.get(Device,device_id)
@@ -256,9 +347,11 @@ class Service:
                 telemetry_data = t.payload if hasattr(t, 'payload') else {}
                 current_state = telemetry_data.get('system_state', current_state)
             is_online = age is not None and age <= 15.0
+            virtual_override = bool(d.controller.get('virtual_backup_override', False)) if d.controller else False
             return {'device':serialize(d),'telemetry':serialize(t) if t else None,
                 'prediction':p.payload if p else None,'rerouting':route.payload if route and
                     current_state in ('CRITICAL_FAILURE','REROUTING') else None,
                 'connectivity':'ONLINE' if is_online else 'STALE' if age is not None else 'NO_DATA',
                 'seconds_since_received':round(age,1) if age is not None else None,
-                'online':is_online,'data_stale':not is_online,'last_seen':d.last_seen}
+                'online':is_online,'data_stale':not is_online,'last_seen':d.last_seen,
+                'virtual_backup_override':virtual_override}

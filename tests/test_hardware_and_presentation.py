@@ -1305,3 +1305,194 @@ def test_telemetry_schema_backward_compatibility():
     assert hybrid.backup_source == "VIRTUAL"
     assert hybrid.manual_cooling_confirmed is True
 
+
+def test_default_backup_is_off_and_virtual(hw_app):
+    """Regression 1, 5, 6: Default backup state is OFF; source is VIRTUAL; backup_commissioned is false."""
+    app, client, hw_token, _ = hw_app
+    t = make_hw_telemetry(sequence=1, system_state='NORMAL')
+    t = t.model_copy(update={
+        'cooling_control_mode': 'MANUAL_SMPS',
+        'manual_cooling_confirmed': False,
+        'primary_cooling': False,
+        'backup_cooling': False,
+        'backup_source': 'VIRTUAL',
+        'backup_commissioned': False
+    })
+    res = client.post('/api/v1/telemetry', json=t.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res.status_code == 200
+
+    latest = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    assert latest['virtual_backup_override'] is False
+    assert latest['telemetry']['payload']['backup_cooling'] is False
+    assert latest['telemetry']['payload']['backup_source'] == 'VIRTUAL'
+    assert latest['telemetry']['payload']['backup_commissioned'] is False
+
+
+def test_dashboard_toggle_backup_on_and_off_lifecycle(hw_app):
+    """Regression 2, 3, 4, 8, 12, 13: POST /api/v1/control/backup activates virtual backup,
+    enforces primary/backup cooling interlock, logs self-healing event, and deactivation clears it."""
+    app, client, hw_token, _ = hw_app
+    t = make_hw_telemetry(sequence=1, system_state='NORMAL')
+    t = t.model_copy(update={
+        'cooling_control_mode': 'MANUAL_SMPS',
+        'manual_cooling_confirmed': True,
+        'primary_cooling': True,
+        'backup_cooling': False,
+        'backup_source': 'VIRTUAL',
+        'backup_commissioned': False
+    })
+    res = client.post('/api/v1/telemetry', json=t.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res.status_code == 200
+
+    # 1. Turn ON virtual backup
+    res_on = client.post('/api/v1/control/backup', json={'device_id': 'CCU-HW-TEST', 'enabled': True})
+    assert res_on.status_code == 200
+    body_on = res_on.json()
+    assert body_on['success'] is True
+    assert body_on['backup_cooling'] is True
+    assert body_on['backup_source'] == 'VIRTUAL'
+    assert body_on['backup_commissioned'] is False
+    assert body_on['virtual_backup_override'] is True
+
+    # Check latest: backup is ON, primary is interlocked to OFF
+    latest_on = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    assert latest_on['virtual_backup_override'] is True
+    assert latest_on['telemetry']['payload']['backup_cooling'] is True
+    assert latest_on['telemetry']['payload']['primary_cooling'] is False
+    assert latest_on['telemetry']['payload']['backup_source'] == 'VIRTUAL'
+    assert latest_on['telemetry']['payload']['backup_commissioned'] is False
+
+    # Check healing events: activation recorded
+    healing_events = client.get('/api/self-healing?device_id=CCU-HW-TEST').json()
+    assert len(healing_events) >= 1
+    activation_event = healing_events[0]['payload']
+    assert activation_event['reason'] == 'Backup takeover activated'
+    assert activation_event['source'] == 'Manual dashboard command'
+    assert activation_event['backup_source'] == 'VIRTUAL'
+    assert activation_event['state'] == 'ACTIVE'
+    assert activation_event['resolved'] is False
+
+    # 2. Turn OFF virtual backup
+    res_off = client.post('/api/v1/control/backup', json={'device_id': 'CCU-HW-TEST', 'enabled': False})
+    assert res_off.status_code == 200
+    body_off = res_off.json()
+    assert body_off['success'] is True
+    assert body_off['backup_cooling'] is False
+    assert body_off['virtual_backup_override'] is False
+
+    latest_off = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    assert latest_off['virtual_backup_override'] is False
+    assert latest_off['telemetry']['payload']['backup_cooling'] is False
+    # In MANUAL_SMPS mode with switch confirmed, primary cooling is restored
+    assert latest_off['telemetry']['payload']['primary_cooling'] is True
+
+    # Check healing events: deactivation recorded
+    healing_events = client.get('/api/self-healing?device_id=CCU-HW-TEST').json()
+    assert len(healing_events) >= 2
+    deactivation_event = healing_events[0]['payload']
+    assert deactivation_event['reason'] == 'Backup takeover cleared'
+    assert deactivation_event['source'] == 'Manual dashboard command'
+    assert deactivation_event['state'] == 'CLEARED'
+    assert deactivation_event['resolved'] is True
+
+
+def test_manual_on_persists_across_subsequent_esp32_telemetry_packets(hw_app):
+    """Regression 10: Subsequent ESP32 telemetry packets do NOT overwrite manual backup ON state to OFF."""
+    app, client, hw_token, _ = hw_app
+    # Initial packet
+    t1 = make_hw_telemetry(sequence=1, system_state='NORMAL')
+    t1 = t1.model_copy(update={'cooling_control_mode': 'MANUAL_SMPS', 'manual_cooling_confirmed': True, 'primary_cooling': True, 'backup_cooling': False})
+    res1 = client.post('/api/v1/telemetry', json=t1.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res1.status_code == 200
+
+    # User toggles virtual backup ON
+    client.post('/api/v1/control/backup', json={'device_id': 'CCU-HW-TEST', 'enabled': True})
+
+    # Next packet from ESP32 arrives reporting backup_cooling=False (since hardware loop has no backup)
+    t2 = make_hw_telemetry(sequence=2, system_state='NORMAL')
+    t2 = t2.model_copy(update={'cooling_control_mode': 'MANUAL_SMPS', 'manual_cooling_confirmed': True, 'primary_cooling': True, 'backup_cooling': False})
+    res2 = client.post('/api/v1/telemetry', json=t2.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res2.status_code == 200
+
+    # Backend arbitration ensures effective_backup remains True
+    latest = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    assert latest['telemetry']['payload']['backup_cooling'] is True
+    assert latest['telemetry']['payload']['primary_cooling'] is False
+    assert latest['telemetry']['payload']['backup_source'] == 'VIRTUAL'
+    assert latest['telemetry']['payload']['backup_commissioned'] is False
+
+
+def test_manual_off_does_not_suppress_genuine_automatic_failover(hw_app):
+    """Regression 9, 11: Turning manual override OFF does not suppress genuine automatic failover
+    (effective_backup = manual_override OR auto_required)."""
+    app, client, hw_token, _ = hw_app
+    # Telemetry in BACKUP_ACTIVE edge state (automatic failover active)
+    t1 = make_hw_telemetry(sequence=1, system_state='BACKUP_ACTIVE')
+    t1 = t1.model_copy(update={'cooling_control_mode': 'MANUAL_SMPS', 'manual_cooling_confirmed': False, 'primary_cooling': False, 'backup_cooling': True, 'backup_source': 'VIRTUAL'})
+    res1 = client.post('/api/v1/telemetry', json=t1.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res1.status_code == 200
+
+    # User turns manual override OFF
+    res_off = client.post('/api/v1/control/backup', json={'device_id': 'CCU-HW-TEST', 'enabled': False})
+    assert res_off.status_code == 200
+    body = res_off.json()
+    # effective_backup remains True because system_state is BACKUP_ACTIVE
+    assert body['backup_cooling'] is True
+    assert body['virtual_backup_override'] is False
+
+    latest = client.get('/api/latest?device_id=CCU-HW-TEST').json()
+    assert latest['telemetry']['payload']['backup_cooling'] is True
+
+
+def test_offline_hardware_rejects_backup_control(hw_app):
+    """Regression 14: When hardware device is offline (>15s without telemetry), control command is rejected with 409."""
+    app, client, hw_token, _ = hw_app
+    # Send a telemetry packet 25 seconds in the past
+    stale_time = datetime.now(timezone.utc) - timedelta(seconds=25)
+    t = make_hw_telemetry(sequence=1, system_state='NORMAL')
+    t = t.model_copy(update={'timestamp': stale_time})
+    res = client.post('/api/v1/telemetry', json=t.model_dump(mode='json'), headers={'X-Device-Token': hw_token})
+    assert res.status_code == 200
+
+    # Attempting to toggle backup should be rejected because hardware is offline
+    res_ctrl = client.post('/api/v1/control/backup', json={'device_id': 'CCU-HW-TEST', 'enabled': True})
+    assert res_ctrl.status_code == 409
+    assert "Hardware is offline" in res_ctrl.json()['detail']
+
+
+def test_firmware_pins_no_backup_gpio_energized():
+    """Regression 7, 15: Firmware preserves PIN_BACKUP = -1, backupCoolingConfigured() == false,
+    and never energizes physical backup GPIO."""
+    from pathlib import Path
+    cooling_cpp = Path(__file__).resolve().parents[1] / 'firmware' / 'esp32_s3' / 'cooling.cpp'
+    config_h = Path(__file__).resolve().parents[1] / 'firmware' / 'esp32_s3' / 'config.h'
+    network_cpp = Path(__file__).resolve().parents[1] / 'firmware' / 'esp32_s3' / 'network.cpp'
+
+    cooling_src = cooling_cpp.read_text(encoding='utf-8')
+    config_src = config_h.read_text(encoding='utf-8')
+    net_src = network_cpp.read_text(encoding='utf-8')
+
+    assert "PIN_BACKUP = -1" in config_src
+    assert "bool backupCoolingConfigured() {" in cooling_src
+    assert "return false;" in cooling_src
+    assert 'j["backup_source"] = "VIRTUAL";' in net_src
+    assert 'j["backup_commissioned"] = false;' in net_src
+
+
+def test_dashboard_toggle_and_confirmation_modal_sources():
+    """Regression 2, 4, 18: Dashboard app.js, index.html, and styles.css have toggle switch,
+    confirmation modal, and offline disable logic."""
+    from pathlib import Path
+    dash_dir = Path(__file__).resolve().parents[1] / 'dashboard' / 'src'
+    app_js = (dash_dir / 'app.js').read_text(encoding='utf-8')
+    index_html = (dash_dir / 'index.html').read_text(encoding='utf-8')
+    styles_css = (dash_dir / 'styles.css').read_text(encoding='utf-8')
+
+    assert "modal-backup-confirm" in index_html
+    assert "Activate backup cooling demo?" in index_html
+    assert "toggle-switch" in styles_css
+    assert "toggleVirtualBackup" in app_js
+    assert "api('v1/control/backup'" in app_js
+    assert "btn-toggle-backup" in app_js
+
+

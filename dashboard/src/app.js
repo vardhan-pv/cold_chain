@@ -163,6 +163,75 @@ $('form-register-device').onsubmit=async e=>{
   }
 };
 
+async function toggleVirtualBackup(enable){
+  if(!device)return;
+  const isHardware = appMode === 'HARDWARE';
+  const isFresh = !isHardware || isLiveHardwareFresh();
+  if(isHardware && !isFresh){
+    $('notice').textContent='Cannot toggle backup cooling: Hardware is offline';
+    return;
+  }
+  if(cache.latest?.telemetry?.payload){
+    cache.latest.telemetry.payload.backup_cooling = enable;
+    cache.latest.telemetry.payload.backup_source = 'VIRTUAL';
+    cache.latest.telemetry.payload.backup_commissioned = false;
+    if(enable){
+      cache.latest.telemetry.payload.primary_cooling = false;
+    }else if(cache.latest.telemetry.payload.cooling_control_mode === 'MANUAL_SMPS'){
+      cache.latest.telemetry.payload.primary_cooling = !!cache.latest.telemetry.payload.manual_cooling_confirmed;
+    }
+  }
+  if(cache.latest){
+    cache.latest.virtual_backup_override = enable;
+  }
+  render();
+
+  try{
+    const res = await api('v1/control/backup',{device_id:device,enabled:enable});
+    if(cache.latest)cache.latest.virtual_backup_override = res.virtual_backup_override;
+    const [latestData,healing] = await Promise.all([
+      api('latest?device_id='+encodeURIComponent(device)),
+      api('self-healing?device_id='+encodeURIComponent(device))
+    ]);
+    cache.latest = latestData;
+    cache['self-healing'] = healing;
+    render();
+  }catch(err){
+    $('notice').textContent='Backup control failed: '+err.message;
+    refresh();
+  }
+}
+
+document.addEventListener('click',e=>{
+  const btn = e.target.closest('#btn-toggle-backup, .btn-toggle-backup');
+  if(!btn)return;
+  e.preventDefault();
+  const isHardware = appMode === 'HARDWARE';
+  const isFresh = !isHardware || isLiveHardwareFresh();
+  if(isHardware && !isFresh){
+    $('notice').textContent='Hardware is offline. Backup control unavailable.';
+    return;
+  }
+  const isCurrentlyActive = btn.classList.contains('active');
+  if(isCurrentlyActive){
+    toggleVirtualBackup(false);
+  }else{
+    if($('modal-backup-confirm')){
+      $('modal-backup-confirm').showModal();
+    }else if(confirm('Activate backup cooling demo? (Software failover only; physical backup is not commissioned)')){
+      toggleVirtualBackup(true);
+    }
+  }
+});
+
+if($('btn-cancel-backup-demo'))$('btn-cancel-backup-demo').onclick=()=>{
+  if($('modal-backup-confirm'))$('modal-backup-confirm').close();
+};
+if($('btn-confirm-backup-demo'))$('btn-confirm-backup-demo').onclick=async()=>{
+  if($('modal-backup-confirm'))$('modal-backup-confirm').close();
+  await toggleVirtualBackup(true);
+};
+
 async function refresh(){
   if(!token||busy)return;
   busy=true;
@@ -351,24 +420,47 @@ function control(){
         : (d.reason || 'ESP32 edge safety loop authoritative'))
     : (d.reason || 'Simulated closed-loop control');
 
+  const overrideActive = !!latest?.virtual_backup_override;
+  const backupActive = !!(t.backup_cooling || overrideActive);
+
   // In MANUAL_SMPS mode, primary_cooling in the payload already reflects GPIO6 (manual
   // confirmation switch), but we also check manual_cooling_confirmed directly as an
   // explicit, unambiguous signal so the dashboard never falls back to the GPIO16 register.
   let primaryCoolingText;
-  if (t.cooling_control_mode === 'MANUAL_SMPS' && t.manual_cooling_confirmed !== undefined && t.manual_cooling_confirmed !== null) {
+  if (backupActive) {
+    // Interlock: primary cooling is suppressed / considered unavailable during backup activation
+    primaryCoolingText = 'OFF';
+  } else if (t.cooling_control_mode === 'MANUAL_SMPS' && t.manual_cooling_confirmed !== undefined && t.manual_cooling_confirmed !== null) {
     primaryCoolingText = t.manual_cooling_confirmed ? 'ON' : 'OFF';
   } else if (t.primary_cooling === undefined) {
     primaryCoolingText = 'UNAVAILABLE';
   } else {
     primaryCoolingText = t.primary_cooling ? 'ON' : 'OFF';
   }
-  const backupCoolingText = t.backup_source === 'VIRTUAL'
-    ? (t.backup_cooling ? 'ON' : 'OFF')
+  const isVirtualBackup = t.backup_source === 'VIRTUAL' || overrideActive;
+  const backupCoolingText = isVirtualBackup
+    ? (backupActive ? 'ON' : 'OFF')
     : (isHardware ? 'NOT COMMISSIONED' : (t.backup_cooling === undefined ? 'UNAVAILABLE' : t.backup_cooling ? 'ON' : 'OFF'));
   const doorText = t.door_open == null ? 'UNAVAILABLE' : (t.door_open ? ('OPEN (' + fmt(t.door_open_s, 0) + 's)') : 'CLOSED');
   const gpsText = t?.gps?.fix
     ? ('FIX (' + (t.gps.satellites || 0) + ' sats · ' + fmt(t.gps.latitude, 4) + ', ' + fmt(t.gps.longitude, 4) + ')')
     : ('NO FIX (' + (t?.gps?.satellites || 0) + ' satellites)');
+
+  const isToggleDisabled = isHardware && !isFresh;
+  const toggleTitle = isToggleDisabled
+    ? 'Hardware offline · Control unavailable'
+    : (backupActive ? 'Click to turn OFF virtual backup cooling' : 'Click to turn ON virtual backup cooling demo');
+  const toggleHtml = `<button id="btn-toggle-backup" type="button" class="toggle-switch btn-toggle-backup ${backupActive ? 'active' : ''} ${isToggleDisabled ? 'disabled' : ''}" ${isToggleDisabled ? 'disabled' : ''} aria-label="Toggle virtual backup cooling demo" title="${esc(toggleTitle)}">
+    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+    <span class="toggle-label">${backupActive ? 'ON' : 'OFF'}</span>
+  </button>`;
+  const backupRow = `<div class="status-row" style="align-items:center;">
+    <span>Backup cooling</span>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <strong id="status-backup-cooling">${backupCoolingText}</strong>
+      ${toggleHtml}
+    </div>
+  </div>`;
 
   return `<section class="card">
     <div class="card-head">
@@ -384,7 +476,7 @@ function control(){
       <p>${esc(advisoryNote)}</p>
     </div>
     ${row('Primary cooling', primaryCoolingText)}
-    ${row('Backup cooling', backupCoolingText)}
+    ${backupRow}
     ${row('Door (Reed switch)', doorText)}
     ${row('GPS status', gpsText)}
     ${row('Edge-reported state', edgeState)}
@@ -576,8 +668,28 @@ function render(){
   if(page==='overview')html=kpis()+`<div class="two-col">${chartCard('chamber_temp_c','Chamber thermal trend','°C',true)}${control()}</div>`+risks()+`<div class="two-col equal">${timeline(5)}${map()}</div>`;
   if(page==='live')html=kpis()+`<div class="two-col equal">${chartCard('chamber_temp_c','Chamber temperature (DS18B20)','°C',true)}${chartCard('heatsink_temp_c','Heatsink temperature (DS18B20)','°C')}${chartCard('sht31_temp_c','Ambient temperature (SHT31)','°C')}${chartCard('humidity_pct','Humidity (SHT31)','%')}${chartCard('primary_current_a','Primary current (ACS712)','A')}</div>`;
   if(page==='predictive')html=risks()+`<section class="card"><h2>Inference details</h2>${row('Model version',latest?.prediction?.model_version)}${row('Measured inference duration',fmt(latest?.prediction?.inference_ms,2)+' ms')}${row('Decision threshold',fmt(latest?.prediction?.threshold,3))}${row('Validation scope','Anomaly classification on active telemetry stream')}<p class="card-sub">ML risk can raise a warning. Confirmed primary faults require sensor evidence. Critical safety rules take precedence.</p></section>`;
-  if(page==='healing')html=`<div class="two-col">${timeline(100)}${control()}</div>`+commandTable();
-  if(page==='equipment')html=`<div class="equipment">${[['ESP32-S3','Edge controller','Acquisition and local control. Pin assignment awaits exact board.'],['DS18B20 × 2','Temperature probes','One chamber probe, one shared heatsink probe.'],['SHT31','Temperature & humidity','Secondary chamber temperature and humidity.'],['ACS712 20A × 1','Primary current only','Backup current requires an external meter.'],['Reed switch','Door monitoring','Door events are distinguished from cooling failures.'],['NEO-6M','GPS location','No-fix state uses null coordinates.'],['TEC1-12706','Primary cooling','Independently switched, fused primary branch.'],['TEC1-12701 / 12703','Backup cooling','Primary OFF confirmation precedes activation.'],['2-channel MOSFET','Cooling interlock','Both Peltiers must never be commanded ON together.'],['Shared heatsink + fan','Thermal assembly','Fan uses unswitched 12 V; shared overheating inhibits both Peltiers.'],['12 V / 15 A + 5 V','Separate supplies','Cooling supply and regulated controller USB supply.'],['Buzzer + 2–3 LEDs','Local indication','OLED and push buttons optional additions.']].map(([a,b,c])=>`<section class="card">${badge(appMode==='HARDWARE'?'HARDWARE MODE':'SIMULATION','neutral')}<h2>${esc(a)}</h2><h3>${esc(b)}</h3><p>${esc(c)}</p></section>`).join('')}</div>`;
+  if(page==='equipment'){
+    const isHardware=(t?.mode||appMode)==='HARDWARE';
+    const isFresh=!isHardware||isLiveHardwareFresh();
+    const isToggleDisabled=isHardware&&!isFresh;
+    const backupActive=!!(t?.backup_cooling||latest?.virtual_backup_override);
+    const equipToggleHtml=`<button type="button" class="toggle-switch btn-toggle-backup ${backupActive?'active':''} ${isToggleDisabled?'disabled':''}" ${isToggleDisabled?'disabled':''} aria-label="Toggle virtual backup cooling demo" title="${isToggleDisabled?'Hardware offline · Control unavailable':(backupActive?'Click to turn OFF virtual backup':'Click to turn ON virtual backup demo')}"><span class="toggle-track"><span class="toggle-thumb"></span></span><span class="toggle-label">${backupActive?'ON':'OFF'}</span></button>`;
+    const equipList=[
+      ['ESP32-S3','Edge controller','Acquisition and local control. Pin assignment awaits exact board.'],
+      ['DS18B20 × 2','Temperature probes','One chamber probe, one shared heatsink probe.'],
+      ['SHT31','Temperature & humidity','Secondary chamber temperature and humidity.'],
+      ['ACS712 20A × 1','Primary current only','Backup current requires an external meter.'],
+      ['Reed switch','Door monitoring','Door events are distinguished from cooling failures.'],
+      ['NEO-6M','GPS location','No-fix state uses null coordinates.'],
+      ['TEC1-12706','Primary cooling','Independently switched, fused primary branch.'],
+      ['TEC1-12701 / 12703','Backup cooling',`Primary OFF confirmation precedes activation.<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;"><span>Virtual backup</span><div style="display:flex;align-items:center;gap:8px;"><strong>${backupActive?'ON':'OFF'}</strong>${equipToggleHtml}</div></div>`],
+      ['2-channel MOSFET','Cooling interlock','Both Peltiers must never be commanded ON together.'],
+      ['Shared heatsink + fan','Thermal assembly','Fan uses unswitched 12 V; shared overheating inhibits both Peltiers.'],
+      ['12 V / 15 A + 5 V','Separate supplies','Cooling supply and regulated controller USB supply.'],
+      ['Buzzer + 2–3 LEDs','Local indication','OLED and push buttons optional additions.']
+    ];
+    html=`<div class="equipment">${equipList.map(([a,b,c])=>`<section class="card">${badge(appMode==='HARDWARE'?'HARDWARE MODE':'SIMULATION','neutral')}<h2>${esc(a)}</h2><h3>${esc(b)}</h3><p>${c.includes('<div')?c:esc(c)}</p></section>`).join('')}</div>`;
+  }
   if(page==='routing')html=map()+`<section class="card"><h2>Facility catalogue</h2><p class="card-sub">Demo records are fictional. Real hardware uses VERIFIED facilities only.</p>${table(['Facility','Available','Temperature °C','Capacity kg','Source'],(cache.warehouses||[]).map(w=>[w.name,w.available?'Yes':'No',w.minimum_temperature+' to '+w.maximum_temperature,w.capacity,w.source]))}</section>`;
   if(page==='alerts')html=`<section class="card"><h2>Recorded faults</h2>${(cache.faults||[]).length?table(['Time','Mode','State','Reason','Source','Lifecycle'],cache.faults.map(e=>[clock(e.timestamp),e.payload.mode||'SYSTEM',e.payload.new_state,e.payload.reason,e.payload.source,e.payload.resolved?(e.payload.resolution||'RESOLVED'):'ACTIVE'])):'<div class="empty">No fault events recorded for this device.</div>'}</section>`;
   if(page==='history')html=`<section class="card"><div class="card-head"><h2>Telemetry history</h2><button id="download-history" class="secondary">Export JSON</button></div>${table(['Acquired','Sequence','Chamber °C','Current A','Observed state','Decision','Mode','Archived'],(cache.history||[]).map(r=>[clock(r.timestamp),r.sequence,fmt(r.payload.chamber_temp_c),fmt(r.payload.primary_current_a),r.payload.system_state,r.decision.state,r.mode,r.archived?'Yes':'No']))}</section>`;

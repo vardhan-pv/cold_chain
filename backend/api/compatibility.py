@@ -1,7 +1,7 @@
 """Keep the uploaded project's read and command URLs on the single new service."""
 from fastapi import APIRouter, Depends, Header, Query, HTTPException
 from backend import commands
-from backend.schemas import CommandAcknowledgement
+from backend.schemas import CommandAcknowledgement, BackupControlRequest
 from database.models import TelemetryRow, ReroutingEvent, ControlCommand, FaultEvent
 
 def router_for(service, operator):
@@ -23,6 +23,10 @@ def router_for(service, operator):
         service.latest(device_id)
         rows = service.rows(ControlCommand, device_id, limit)
         return {'device_id': device_id, 'count': len(rows), 'commands': rows}
+
+    @router.post('/control/backup', dependencies=auth)
+    def control_backup(data: BackupControlRequest):
+        return service.set_virtual_backup(data.device_id, data.enabled)
 
     @router.get('/telemetry/{device_id}/latest', dependencies=auth)
     def latest(device_id: str):

@@ -15,7 +15,7 @@ from simulator.engine import Simulator
 from backend import commands
 from backend.archive import import_legacy, archive_rows
 from backend.api.compatibility import router_for
-from backend.schemas import CommandAcknowledgement,ResetReconciliation
+from backend.schemas import CommandAcknowledgement,ResetReconciliation,BackupControlRequest
 
 ROOT=Path(__file__).resolve().parents[1]
 log=logging.getLogger('cold_chain')
@@ -129,6 +129,11 @@ def create_app(database_url=None,admin_token=None,models=None,run_simulation=Fal
     @app.post('/api/devices/{device_id}/reconcile-reset',dependencies=auth)
     def reconcile_reset(device_id:str,data:ResetReconciliation):
         return service.reconcile_reset(device_id,data)
+
+    @app.post('/api/control/backup',dependencies=auth)
+    @app.post('/api/v1/control/backup',dependencies=auth,include_in_schema=False)
+    def control_backup(data:BackupControlRequest):
+        return service.set_virtual_backup(data.device_id,data.enabled)
 
     @app.post('/api/telemetry')
     @app.post('/api/v1/telemetry',include_in_schema=False)
