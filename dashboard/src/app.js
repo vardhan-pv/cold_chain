@@ -675,6 +675,35 @@ function getActiveNavLocation() {
   return null;
 }
 
+function showStationDiscoveryNotification(facilities, radius) {
+  if (!facilities || facilities.length === 0) return;
+  const nearest = facilities[0];
+  const toast = $('map-station-toast');
+  if (toast) {
+    toast.innerHTML = `
+      <div class="toast-indicator">🔔</div>
+      <div class="toast-body">
+        <div class="toast-headline">
+          <strong>${facilities.length} Nearby Cold Storage Stations Discovered</strong>
+          <span class="toast-pill">${radius} km radius</span>
+        </div>
+        <div class="toast-detail">Nearest: <strong>${esc(nearest.name)}</strong> · <span class="dist-val">${fmt(nearest.distance_km, 1)} km away</span> (${esc(nearest.address || 'Verified Cold Hub')})</div>
+      </div>
+      <div class="toast-actions">
+        <button type="button" class="btn-toast-route btn-route-action" data-id="${esc(nearest.id)}">Route to Nearest ➔</button>
+        <button type="button" class="btn-toast-close" title="Dismiss notification">✕</button>
+      </div>
+    `;
+    toast.style.display = 'flex';
+  }
+
+  const notice = $('notice');
+  if (notice && (!notice.textContent || notice.textContent.startsWith('✓'))) {
+    notice.className = 'notice success';
+    notice.textContent = `✓ Located ${facilities.length} verified cold storage stations within ${radius} km (Nearest: ${nearest.name} · ${fmt(nearest.distance_km, 1)} km)`;
+  }
+}
+
 async function fetchNearbyFacilities(devId, radiusKm) {
   if (mapState.facilitiesLoading) return;
   mapState.facilitiesLoading = true;
@@ -690,6 +719,18 @@ async function fetchNearbyFacilities(devId, radiusKm) {
     mapState.nearestFacility = mapState.facilities.length > 0 ? mapState.facilities[0] : null;
     if (mapState.facilities.length === 0) {
       mapState.facilitiesError = res.message || 'No verified cold-storage facilities found nearby';
+      const toast = $('map-station-toast');
+      if (toast) toast.style.display = 'none';
+    } else {
+      showStationDiscoveryNotification(mapState.facilities, radius);
+      if (mapState.instance && !mapState.currentRoute) {
+        const navLoc = getActiveNavLocation();
+        if (navLoc) {
+          const bounds = L.latLngBounds([[navLoc.latitude, navLoc.longitude]]);
+          mapState.facilities.forEach(f => bounds.extend([f.latitude, f.longitude]));
+          mapState.instance.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
+        }
+      }
     }
     renderFacilityMarkers();
     updateMapSidebar();
@@ -697,6 +738,8 @@ async function fetchNearbyFacilities(devId, radiusKm) {
     mapState.facilities = [];
     mapState.nearestFacility = null;
     mapState.facilitiesError = 'Cold-storage search temporarily unavailable';
+    const toast = $('map-station-toast');
+    if (toast) toast.style.display = 'none';
     updateMapSidebar();
   } finally {
     mapState.facilitiesLoading = false;
@@ -742,6 +785,11 @@ function renderFacilityMarkers() {
     });
 
     const marker = L.marker([f.latitude, f.longitude], { icon: facilityIcon });
+    marker.bindTooltip(`<strong>${esc(f.name)}</strong><br><span style="color:#0f8478;font-weight:750;">${fmt(f.distance_km, 1)} km away</span>`, {
+      direction: 'top',
+      offset: [0, -26],
+      className: 'station-map-tooltip'
+    });
     marker.bindPopup(`
       <div style="min-width:190px;">
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
@@ -989,6 +1037,7 @@ function map(){
     </div>
     <div class="map-layout">
       <div class="map-view-container">
+        <div id="map-station-toast" class="station-discovery-toast" style="display:none;"></div>
         <div id="leaflet-map" class="leaflet-map-host"></div>
       </div>
       <div class="map-sidebar" id="map-sidebar-content">
@@ -1185,6 +1234,17 @@ document.addEventListener('click', e => {
       const bounds = L.latLngBounds([[navLoc.latitude, navLoc.longitude]]);
       mapState.facilities.forEach(f => bounds.extend([f.latitude, f.longitude]));
       mapState.instance.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+    }
+    return;
+  }
+
+  // Dismiss station discovery toast
+  const toastClose = e.target.closest('.btn-toast-close');
+  if (toastClose) {
+    e.preventDefault();
+    const toast = $('map-station-toast');
+    if (toast) {
+      toast.style.display = 'none';
     }
     return;
   }

@@ -647,6 +647,122 @@ dialog::backdrop{background:rgba(16,46,44,0.65);backdrop-filter:blur(3px)}
 }
 .facility-pin-wrapper.active-dest {
   background: #b23b2b;
+  transform: rotate(-45deg) scale(1.15);
+  box-shadow: 0 0 0 4px rgba(178, 59, 43, 0.35), 0 3px 8px rgba(0,0,0,0.4);
+}
+.facility-pin-wrapper.nearest-dest {
+  background: #1b5e39;
+  transform: rotate(-45deg) scale(1.1);
+  box-shadow: 0 0 0 3px rgba(27, 94, 57, 0.4), 0 3px 8px rgba(0,0,0,0.35);
+}
+
+/* Station Discovery Notification Banner / Toast */
+.station-discovery-toast {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  right: 14px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid #95d5b2;
+  border-left: 5px solid #1b5e39;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  animation: slideDownToast 0.3s ease-out;
+}
+@keyframes slideDownToast {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.toast-indicator {
+  font-size: 20px;
+  line-height: 1;
+}
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+.toast-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #0f3628;
+}
+.toast-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: #d8f3dc;
+  color: #1b5e39;
+}
+.toast-detail {
+  font-size: 11px;
+  color: #3b5a4b;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toast-detail .dist-val {
+  font-weight: 750;
+  color: #1b5e39;
+}
+.toast-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn-toast-route {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 6px;
+  background: #174d3f;
+  color: #ffffff;
+  border: 1px solid #174d3f;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.btn-toast-route:hover {
+  background: #0f392e;
+}
+.btn-toast-close {
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  color: #6b807c;
+  cursor: pointer;
+  padding: 4px 6px;
+  line-height: 1;
+  border-radius: 4px;
+}
+.btn-toast-close:hover {
+  background: #eef2ed;
+  color: #102e2c;
+}
+
+/* Map Marker Tooltip */
+.station-map-tooltip {
+  background: #ffffff;
+  border: 1px solid #1b5e39;
+  color: #123328;
+  font-size: 11px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.18);
+  font-family: inherit;
+}
+.station-map-tooltip::before {
+  border-top-color: #1b5e39 !important;
 }
 
 .map-empty-box {
