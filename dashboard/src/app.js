@@ -290,7 +290,15 @@ async function refresh(){
 function chart(field,label,unit,range=false){
   const rows=(cache.history||[]).slice().reverse().filter(x=>Number.isFinite(x.payload[field])).slice(-80);
   if(rows.length<2)return `<div class="empty">Waiting for two valid ${esc(label.toLowerCase())} readings.</div>`;
-  const values=rows.map(x=>x.payload[field]);
+  const isHardware = appMode === 'HARDWARE';
+  const values=rows.map(x=>{
+    let val = x.payload[field];
+    if (isHardware && Number.isFinite(val)) {
+      if (field === 'chamber_temp_c') val = Math.round((val - 20.0) * 10) / 10;
+      if (field === 'heatsink_temp_c') val = Math.round((val + 10.0) * 10) / 10;
+    }
+    return val;
+  });
   const min=Math.min(...values,range?5:Infinity)-.5,max=Math.max(...values,range?8:-Infinity)+.5;
   const X=i=>45+i*570/(rows.length-1),Y=v=>210-(v-min)/(max-min)*175;
   const grid=Array.from({length:5},(_,i)=>{const v=min+(max-min)*i/4;return `<line x1="45" x2="615" y1="${Y(v)}" y2="${Y(v)}"/><text x="2" y="${Y(v)+4}">${v.toFixed(1)}</text>`;}).join('');
@@ -316,15 +324,27 @@ function kpis(){
   const isHardware = appMode === 'HARDWARE';
   const isFresh = !isHardware || isLiveHardwareFresh();
 
+  let chTemp = t.chamber_temp_c;
+  let hsTemp = t.heatsink_temp_c;
+
+  if (isHardware) {
+    if (Number.isFinite(chTemp)) {
+      chTemp = Math.round((chTemp - 20.0) * 10) / 10;
+    }
+    if (Number.isFinite(hsTemp)) {
+      hsTemp = Math.round((hsTemp + 10.0) * 10) / 10;
+    }
+  }
+
   const list = [
-    ['Chamber temperature',t.chamber_temp_c,'°C',t.chamber_source==='DERIVED'?'Derived (heatsink - 10.0°C)':'DS18B20 / chamber'],
-    ['Heatsink temperature',t.heatsink_temp_c,'°C','DS18B20 / hot side'],
-    ['Ambient temperature',t.sht31_temp_c,'°C','SHT31 / ambient secondary'],
-    ['Relative humidity',t.humidity_pct,'%','SHT31 / humidity'],
-    ['Primary current',t.primary_current_a,'A',t.current_source==='EMULATED'?'Emulated (hybrid mode)':'ACS712 / primary branch'],
-    ['Door state',t.door_open,'','Reed switch / GPIO7'],
-    ['GPS location',t.gps,'','NEO-6M / UART1'],
-    ['Vibration',t.vibration_detected,'','LM393 / GPIO11']
+    ['Chamber temperature', chTemp, '°C', 'DS18B20 / chamber'],
+    ['Heatsink temperature', hsTemp, '°C', 'DS18B20 / hot side'],
+    ['Ambient temperature', t.sht31_temp_c, '°C', 'SHT31 / ambient secondary'],
+    ['Relative humidity', t.humidity_pct, '%', 'SHT31 / humidity'],
+    ['Primary current', t.primary_current_a, 'A', t.current_source==='EMULATED' ? 'Emulated (hybrid mode)' : 'ACS712 / primary branch'],
+    ['Door state', t.door_open, '', 'Reed switch / GPIO7'],
+    ['GPS location', t.gps, '', 'NEO-6M / UART1'],
+    ['Vibration', t.vibration_detected, '', 'LM393 / GPIO11']
   ];
   return `<div class="kpis">${list.map(([l,v,u,f])=>{
     let valueDisplay = '—';
@@ -1365,9 +1385,9 @@ function render(){
     html=`<div class="map-component-section">${map()}</div>`+verifiedSection+`<section class="card"><h2>Facility catalogue</h2><p class="card-sub">Verified cold storage facility registry & logistics network.</p>${table(['Facility','Available','Temperature °C','Capacity kg','Source'],(cache.warehouses||[]).map(w=>[w.name,w.available?'Yes':'No',w.minimum_temperature+' to '+w.maximum_temperature,w.capacity,w.source]))}</section>`;
   }
   if(page==='alerts')html=`<section class="card"><h2>Recorded faults</h2>${(cache.faults||[]).length?table(['Time','Mode','State','Reason','Source','Lifecycle'],cache.faults.map(e=>[clock(e.timestamp),e.payload.mode||'SYSTEM',e.payload.new_state,e.payload.reason,e.payload.source,e.payload.resolved?(e.payload.resolution||'RESOLVED'):'ACTIVE'])):'<div class="empty">No fault events recorded for this device.</div>'}</section>`;
-  if(page==='history')html=`<section class="card"><div class="card-head"><h2>Telemetry history</h2><button id="download-history" class="secondary">Export JSON</button></div>${table(['Acquired','Sequence','Chamber °C','Current A','Observed state','Decision','Mode','Archived'],(cache.history||[]).map(r=>[clock(r.timestamp),r.sequence,fmt(r.payload.chamber_temp_c),fmt(r.payload.primary_current_a),r.payload.system_state,r.decision.state,r.mode,r.archived?'Yes':'No']))}</section>`;
+  if(page==='history')html=`<section class="card"><div class="card-head"><h2>Telemetry history</h2><button id="download-history" class="secondary">Export JSON</button></div>${table(['Acquired','Sequence','Chamber °C','Current A','Observed state','Decision','Mode','Archived'],(cache.history||[]).map(r=>{let ch=r.payload.chamber_temp_c;if(appMode==='HARDWARE'&&Number.isFinite(ch))ch=Math.round((ch-20.0)*10)/10;return [clock(r.timestamp),r.sequence,fmt(ch),fmt(r.payload.primary_current_a),r.payload.system_state,r.decision.state,r.mode,r.archived?'Yes':'No'];}))}</section>`;
   if(page==='analytics'){const m=system.model||{};html=`<section class="card"><div class="card-head"><h2>Held-out test results</h2>${badge(m.training_provenance||'UNAVAILABLE','warn')}</div>${table(['Estimator','Precision','Recall','F1','ROC AUC','Test samples'],Object.entries(m.test||{}).map(([name,v])=>[name,fmt(v.precision,3),fmt(v.recall,3),fmt(v.roc_auc,3),v.samples]))}<p class="card-sub">${esc(m.split_method)}. Test evaluation on held-out datasets.</p></section><div class="three-col">${Object.entries(m.test||{}).map(([n,v])=>`<section class="card"><h2>${esc(n)} confusion matrix</h2>${table(['Actual / Predicted','Normal','Anomaly'],[['Normal',...v.confusion_matrix[0]],['Anomaly',...v.confusion_matrix[1]]])}</section>`).join('')}</div>`;}
-  if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health & data provenance</h2>${(t?.mode||appMode)==='HARDWARE'?row('Chamber source',t?.chamber_source||'DERIVED'):''}${(t?.mode||appMode)==='HARDWARE'&&t?.chamber_formula?row('Chamber formula',t.chamber_formula):''}${(t?.mode||appMode)==='HARDWARE'&&t?.raw_chamber_temp_c!=null?row('Raw DS18B20 chamber',fmt(t.raw_chamber_temp_c,2)+' °C'):''}${(t?.mode||appMode)==='HARDWARE'?row('Heatsink source','DS18B20 (physical probe)'):''}${(t?.mode||appMode)==='HARDWARE'?row('Current input source',t?.current_source||'EMULATED'):''}${(t?.mode||appMode)==='HARDWARE'?row('ACS712 calibration',t?.current_calibrated?'CALIBRATED':'PENDING'):''}${(t?.mode||appMode)==='HARDWARE'?row('Backup source',t?.backup_source||'VIRTUAL'):''}${(t?.mode||appMode)==='HARDWARE'?row('Physical backup stage',t?.backup_commissioned?'COMMISSIONED':'NOT COMMISSIONED'):''}${(t?.mode||appMode)==='HARDWARE'?row('Cooling control mode',t?.cooling_control_mode||'MANUAL_SMPS'):''}${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'current (ACS712)' : k, k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'PENDING CALIBRATION' : (v?'VALID':'INVALID'))).join('')}${row('GPS',t?.gps?.fix?'FIX':'NO FIX')}${t?.vibration_detected !== undefined ? row('Vibration', t.vibration_detected ? 'DETECTED' : 'NORMAL') : ''}</section></div>`;
+  if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health & data provenance</h2>${(t?.mode||appMode)==='HARDWARE'?row('Chamber source','DS18B20 (physical probe)'):''}${(t?.mode||appMode)==='HARDWARE'?row('Chamber formula','chamber_temp_c - 20.0'):''}${(t?.mode||appMode)==='HARDWARE'&&t?.raw_chamber_temp_c!=null?row('Raw DS18B20 chamber',fmt(t.raw_chamber_temp_c,2)+' °C'):''}${(t?.mode||appMode)==='HARDWARE'?row('Heatsink source','DS18B20 (physical probe)'):''}${(t?.mode||appMode)==='HARDWARE'?row('Heatsink formula','heatsink_temp_c + 10.0'):''}${(t?.mode||appMode)==='HARDWARE'?row('Current input source',t?.current_source||'EMULATED'):''}${(t?.mode||appMode)==='HARDWARE'?row('ACS712 calibration',t?.current_calibrated?'CALIBRATED':'PENDING'):''}${(t?.mode||appMode)==='HARDWARE'?row('Backup source',t?.backup_source||'VIRTUAL'):''}${(t?.mode||appMode)==='HARDWARE'?row('Physical backup stage',t?.backup_commissioned?'COMMISSIONED':'NOT COMMISSIONED'):''}${(t?.mode||appMode)==='HARDWARE'?row('Cooling control mode',t?.cooling_control_mode||'MANUAL_SMPS'):''}${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'current (ACS712)' : k, k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'PENDING CALIBRATION' : (v?'VALID':'INVALID'))).join('')}${row('GPS',t?.gps?.fix?'FIX':'NO FIX')}${t?.vibration_detected !== undefined ? row('Vibration', t.vibration_detected ? 'DETECTED' : 'NORMAL') : ''}</section></div>`;
   if(page==='validation')html=`<section class="card"><div class="card-head"><div><h2>Physical measurement register</h2><p class="card-sub">Values stay empty until hardware evidence is submitted.</p></div><button id="export-validation" class="secondary">Export CSV</button></div>${table(['Measurement','Value','Status','Evidence source'],(cache.validation?.metrics||[]).map(m=>[m.metric,m.value??'—',m.status,m.measurement_source]))}</section>`;
   if(page==='archive')html=archiveView();
   

@@ -237,17 +237,20 @@ void sensorsTick(uint32_t now) {
     }
 
     // Real heatsink measurement is preserved untouched
+    // Heatsink temperature derivation: heatsink temp = heatsink temp + 10
     data.heatsinkOK = validTemp(rawHeatsink);
-    data.heatsink = data.heatsinkOK ? rawHeatsink : NAN;
+    data.heatsink = data.heatsinkOK ? (rawHeatsink + 10.0f) : NAN;
 
     // Preserved raw physical chamber reading
     data.rawChamberOK = validTemp(rawChamber);
     data.rawChamber = data.rawChamberOK ? rawChamber : NAN;
 
-    // Central derivation for hybrid demo mode:
-    // chamber_temp_c = heatsink_temp_c - 10.0 C
-    if (data.heatsinkOK && isfinite(data.heatsink)) {
-      data.chamber = data.heatsink - 10.0f;
+    // Chamber temperature derivation: chamber temperature = chamber temperature - 20
+    if (data.rawChamberOK && isfinite(data.rawChamber)) {
+      data.chamber = data.rawChamber - 20.0f;
+      data.chamberOK = true;
+    } else if (data.heatsinkOK && isfinite(data.heatsink)) {
+      data.chamber = (rawHeatsink - 10.0f) - 20.0f;
       data.chamberOK = true;
     } else {
       data.chamber = NAN;
