@@ -17,7 +17,10 @@ def features_for(history: list[Telemetry]):
     current_feature_available = health.current or (
         t.primary_current_a is not None and getattr(t, 'current_source', None) == 'EMULATED'
     )
-    if not (health.chamber and health.heatsink and health.sht31 and health.door and current_feature_available):
+    chamber_feature_available = health.chamber or (
+        t.chamber_temp_c is not None and getattr(t, 'chamber_source', None) == 'DERIVED'
+    )
+    if not (chamber_feature_available and health.heatsink and health.sht31 and health.door and current_feature_available):
         return None
     now = t.timestamp.timestamp()
     window = [x for x in history if 0 <= now - x.timestamp.timestamp() <= 60

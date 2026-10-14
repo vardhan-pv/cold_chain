@@ -69,13 +69,23 @@ class Service:
                 raise HTTPException(404,'Register the device before sending telemetry')
             if d.mode != t.mode:
                 raise HTTPException(409,'Device mode is immutable; register a separate device for hardware')
-            if t.mode == 'HARDWARE' and ENABLE_EMULATED_CURRENT and t.current_source == 'EMULATED':
-                if t.primary_current_a is None:
-                    current_val = EMULATED_PRIMARY_CURRENT_A if t.primary_cooling else EMULATED_IDLE_CURRENT_A
-                    t = t.model_copy(update={
-                        'primary_current_a': current_val,
-                        'current_calibrated': False
-                    })
+            if t.mode == 'HARDWARE':
+                updates = {}
+                if getattr(t, 'chamber_source', None) == 'DERIVED' and t.chamber_temp_c is None and t.heatsink_temp_c is not None:
+                    updates['chamber_temp_c'] = round(t.heatsink_temp_c - 10.0, 2)
+                    updates['chamber_formula'] = 'heatsink_temp_c - 10.0'
+                if ENABLE_EMULATED_CURRENT and t.current_source == 'EMULATED' and t.primary_current_a is None:
+                    # In MANUAL_SMPS mode the physical state is the GPIO6 switch, not GPIO16.
+                    # Use manual_cooling_confirmed to drive emulated current truthfully.
+                    if t.cooling_control_mode == 'MANUAL_SMPS' and t.manual_cooling_confirmed is not None:
+                        cooling_on = t.manual_cooling_confirmed
+                    else:
+                        cooling_on = t.primary_cooling
+                    current_val = EMULATED_PRIMARY_CURRENT_A if cooling_on else EMULATED_IDLE_CURRENT_A
+                    updates['primary_current_a'] = current_val
+                    updates['current_calibrated'] = False
+                if updates:
+                    t = t.model_copy(update=updates)
             old=s.scalar(select(TelemetryRow).where(TelemetryRow.device_id==t.device_id,
                 TelemetryRow.boot_id==t.boot_id,TelemetryRow.sequence==t.sequence))
             payload=t.model_dump(mode='json')
@@ -126,8 +136,11 @@ class Service:
                 }
             else:
                 prediction=self.predictor.predict(feature)
-                if t.mode == 'HARDWARE' and getattr(t, 'current_source', None) == 'EMULATED':
-                    prediction['feature_provenance'] = 'HARDWARE_HYBRID_EMULATED_CURRENT'
+                if t.mode == 'HARDWARE':
+                    if getattr(t, 'chamber_source', None) == 'DERIVED':
+                        prediction['feature_provenance'] = 'HARDWARE_HYBRID_DERIVED_CHAMBER_EMULATED_CURRENT_VIRTUAL_BACKUP'
+                    elif getattr(t, 'current_source', None) == 'EMULATED':
+                        prediction['feature_provenance'] = 'HARDWARE_HYBRID_EMULATED_CURRENT'
             if archive:
                 decision={'state':t.system_state,'authority':'ARCHIVED_NO_CONTROL',
                     'reason':'Buffered, stale or out-of-order telemetry; no live decision',

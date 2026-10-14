@@ -213,8 +213,24 @@ void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,
   JsonDocument j;j["schema_version"]="1.0";j["device_id"]=DEVICE_ID;j["boot_id"]=bootID;j["sequence"]=(uint32_t)(++sequence);
   j["timestamp"]=timestamp;j["uptime_ms"]=now;j["mode"]="HARDWARE";
   auto number=[&](const char* key,float value,bool valid){if(valid&&isfinite(value))j[key]=value;else j[key]=nullptr;};
-  number("chamber_temp_c",s.chamber,s.chamberOK);number("heatsink_temp_c",s.heatsink,s.heatsinkOK);
+  number("chamber_temp_c",s.chamber,s.chamberOK);
+  j["chamber_source"] = "DERIVED";
+  j["chamber_formula"] = "heatsink_temp_c - 10.0";
+  if (s.rawChamberOK && isfinite(s.rawChamber)) {
+    j["raw_chamber_temp_c"] = s.rawChamber;
+  } else {
+    j["raw_chamber_temp_c"] = nullptr;
+  }
+  number("heatsink_temp_c",s.heatsink,s.heatsinkOK);
   number("sht31_temp_c",s.shtTemp,s.shtOK);number("humidity_pct",s.humidity,s.shtOK);
+
+  // MANUAL_SMPS mode: primary Peltier + fan are powered directly from 12V SMPS.
+  // GPIO16 (PIN_PRIMARY) is NOT the physical ON/OFF source in this mode.
+  // GPIO6 (PIN_COOLING_CONFIRM, INPUT_PULLUP) is the user confirmation switch:
+  //   LOW  = cooling physically ON  (user closed switch to GND)
+  //   HIGH = cooling OFF / not confirmed
+  // When PIN_COOLING_CONFIRM is wired and confirmed OK, we are in MANUAL_SMPS mode.
+  const bool isManualSmps = (PIN_COOLING_CONFIRM >= 0 && s.manualCoolingOk);
 
   bool currentAvailable = false;
   float currentVal = 0.0f;
@@ -226,7 +242,12 @@ void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,
   } else if (ENABLE_EMULATED_CURRENT) {
     currentAvailable = true;
     currentSource = "EMULATED";
-    currentVal = primaryObserved() ? EMULATED_PRIMARY_CURRENT_A : 0.0f;
+    // In MANUAL_SMPS mode, emulated current follows the GPIO6 confirmation switch,
+    // not the GPIO16 output register (which is never asserted in manual mode).
+    // In GPIO_CONTROLLED mode (autonomous / TEST PRIMARY), use primaryObserved().
+    currentVal = isManualSmps
+                   ? (s.manualCoolingOn ? EMULATED_PRIMARY_CURRENT_A : 0.0f)
+                   : (primaryObserved() ? EMULATED_PRIMARY_CURRENT_A : 0.0f);
   }
   if (currentAvailable) j["primary_current_a"] = currentVal;
   else j["primary_current_a"] = nullptr;
@@ -240,7 +261,40 @@ void networkEnqueue(const SensorData& s,const coldchain::Output& o,uint32_t now,
     if(isfinite(s.speed))gps["speed_kmph"]=s.speed;else gps["speed_kmph"]=nullptr;
   }else{gps["latitude"]=nullptr;gps["longitude"]=nullptr;gps["speed_kmph"]=nullptr;gps["age_s"]=nullptr;}
   gps["satellites"]=s.satellites;
-  j["primary_cooling"]=primaryObserved();j["backup_cooling"]=backupObserved();j["system_state"]=coldchain::name(o.state);
+
+  // cooling_control_mode distinguishes the physical drive path so the dashboard
+  // can display truthful status without claiming GPIO16 is the ON/OFF source.
+  j["cooling_control_mode"] = isManualSmps ? "MANUAL_SMPS" : "GPIO_CONTROLLED";
+  if (isManualSmps) {
+    j["manual_cooling_confirmed"] = s.manualCoolingOn;
+  } else {
+    j["manual_cooling_confirmed"] = nullptr;
+  }
+
+  // In MANUAL_SMPS mode, primary_cooling reflects the physical confirmation switch
+  // (GPIO6), NOT the GPIO16 actuator register, which is always de-asserted in manual.
+  // In GPIO_CONTROLLED mode (autonomous, TEST PRIMARY), primaryObserved() is authoritative.
+  bool reportedPrimary = isManualSmps ? s.manualCoolingOn : primaryObserved();
+  j["primary_cooling"]=reportedPrimary;
+
+  // VIRTUAL BACKUP COOLING:
+  // Physical backup power stage is NOT commissioned.
+  // Software failover representation when primary fails or is in BACKUP_ACTIVE/RECOVERY.
+  bool virtualBackup = false;
+  if (o.backup || o.state == coldchain::State::BACKUP_ACTIVE || o.state == coldchain::State::RECOVERY) {
+    virtualBackup = true;
+  }
+  if (reportedPrimary && virtualBackup) {
+    virtualBackup = false; // Interlock: both channels can never be ON together
+  }
+  if (s.heatsinkOK && s.heatsink >= 50.0f) {
+    virtualBackup = false; // Real thermal safety cutoff inhibits backup
+  }
+  j["backup_cooling"] = virtualBackup;
+  j["backup_source"] = "VIRTUAL";
+  j["backup_commissioned"] = false;
+
+  j["system_state"]=coldchain::name(o.state);
   auto health=j["sensor_health"].to<JsonObject>();health["chamber"]=s.chamberOK;health["heatsink"]=s.heatsinkOK;
   health["sht31"]=s.shtOK;health["current"]=s.currentOK;health["door"]=s.doorOK;
   j["fault_injection"]=injection;j["buffered"]=WiFi.status()!=WL_CONNECTED;

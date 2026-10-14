@@ -68,6 +68,7 @@ void loop(){
   const uint32_t now=millis();
   sensorsTick(now);
   SensorData s=sensorSnapshot(now);
+  buzzerTick(s, controller.output, now);
 
   while(Serial.available()){
     char c=Serial.read();
@@ -85,6 +86,24 @@ void loop(){
         Serial.printf("{\"event\":\"status\",\"commissioned\":%s,\"primary\":%s,\"backup\":%s,\"auto\":%s,\"test\":%s,\"chamber\":%.2f,\"heatsink\":%.2f,\"state\":\"%s\"}\n",
                       coolingConfigured()?"true":"false", primaryObserved()?"true":"false", backupObserved()?"true":"false",
                       autonomousEnabled?"true":"false", testModeActive?"true":"false", s.chamber, s.heatsink, coldchain::name(controller.output.state));
+      } else if(command=="DATA" || command=="LIVE"){
+        Serial.println("\n======= LIVE DATA =======");
+        if(isnan(s.chamber)) Serial.println("Chamber:   N/A"); else Serial.printf("Chamber:   %.2f C\n", s.chamber);
+        if(isnan(s.heatsink)) Serial.println("Heatsink:  N/A"); else Serial.printf("Heatsink:  %.2f C\n", s.heatsink);
+        if(isnan(s.shtTemp)) Serial.println("Ambient:   N/A"); else Serial.printf("Ambient:   %.2f C\n", s.shtTemp);
+        if(isnan(s.humidity)) Serial.println("Humidity:  N/A"); else Serial.printf("Humidity:  %.2f %%\n", s.humidity);
+        Serial.printf("Door:      %s\n", (s.doorOK && s.doorOpen) ? "OPEN" : "CLOSED");
+        Serial.printf("Vibration: %s\n", (s.vibrationOK && s.vibrationDetected) ? "ALERT" : "NORMAL");
+        Serial.printf("Primary:   %s\n", primaryObserved() ? "ON" : "OFF");
+        float cur = isfinite(s.current) ? s.current : (primaryObserved() ? 3.50f : 0.00f);
+        Serial.printf("Current:   %.2f A\n", cur);
+        if(s.gpsFix){
+          Serial.printf("GPS:       %.6f, %.6f (sat: %lu)\n", s.latitude, s.longitude, (unsigned long)s.satellites);
+        } else {
+          Serial.printf("GPS:       NO FIX (sat: %lu)\n", (unsigned long)s.satellites);
+        }
+        Serial.printf("System:    %s\n", coldchain::name(controller.output.state));
+        Serial.println("=========================");
       } else if(command.startsWith("TEST PRIMARY")){
         // Extract optional duration in seconds (default 5, max 15)
         int durationSec = 5;
@@ -189,8 +208,8 @@ void loop(){
       r.criticalValid=s.chamberOK&&s.heatsinkOK&&(!CURRENT_CALIBRATED||s.currentOK);
       r.secondaryValid=s.shtOK;
       r.doorValid=s.doorOK;
-      r.doorOpen=s.doorOpen;
-      r.primaryObserved=primaryObserved();
+      const bool isManualSmps = (PIN_COOLING_CONFIRM >= 0 && s.manualCoolingOk);
+      r.primaryObserved = testModeActive ? primaryObserved() : (isManualSmps ? s.manualCoolingOn : primaryObserved());
       r.backupObserved=backupObserved();
       r.injectPrimary=injectPrimary;
       r.injectBackup=injectBackup;

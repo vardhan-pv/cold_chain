@@ -44,16 +44,32 @@ class Telemetry(Contract):
     timestamp: datetime
     uptime_ms: int = Field(ge=0)
     mode: Literal['SIMULATION', 'HARDWARE']
-    chamber_temp_c: float | None = Field(ge=-55, le=125)
-    heatsink_temp_c: float | None = Field(ge=-55, le=125)
-    sht31_temp_c: float | None = Field(ge=-40, le=125)
-    humidity_pct: float | None = Field(ge=0, le=100)
-    primary_current_a: float | None = Field(ge=0, le=20)
-    door_open: bool | None
+    chamber_temp_c: float | None = Field(None, ge=-55, le=125)
+    # Provenance of chamber temperature:
+    # "DERIVED"    = centrally derived from heatsink_temp_c - 10.0 C
+    # "PHYSICAL"   = physical chamber probe
+    # "SIMULATED"  = simulation model
+    chamber_source: Literal['PHYSICAL', 'DERIVED', 'SIMULATED'] | None = None
+    chamber_formula: str | None = None
+    # Raw physical DS18B20 reading if probe exists
+    raw_chamber_temp_c: float | None = Field(None, ge=-55, le=125)
+
+    heatsink_temp_c: float | None = Field(None, ge=-55, le=125)
+    sht31_temp_c: float | None = Field(None, ge=-40, le=125)
+    humidity_pct: float | None = Field(None, ge=0, le=100)
+    primary_current_a: float | None = Field(None, ge=0, le=20)
+    door_open: bool | None = None
     door_open_s: float = Field(ge=0, default=0)
     gps: GPS
     primary_cooling: bool
     backup_cooling: bool
+    # Provenance of backup cooling:
+    # "VIRTUAL"    = software-only failover representation (second MOSFET stage uncommissioned)
+    # "PHYSICAL"   = physical secondary Peltier driver
+    # "SIMULATED"  = simulation model
+    backup_source: Literal['PHYSICAL', 'VIRTUAL', 'SIMULATED', 'NONE'] | None = None
+    backup_commissioned: bool = False
+
     system_state: STATES
     sensor_health: SensorHealth
     fault_injection: Literal['NONE', 'PRIMARY_FAILURE', 'BACKUP_FAILURE'] = 'NONE'
@@ -61,6 +77,16 @@ class Telemetry(Contract):
     vibration_detected: bool | None = None
     current_source: Literal['NONE', 'ACS712', 'PHYSICAL', 'EMULATED', 'SIMULATED'] = 'NONE'
     current_calibrated: bool = False
+    # Physical drive path identifier.
+    # "MANUAL_SMPS"    = Peltier powered from 12V SMPS directly; GPIO6 (INPUT_PULLUP)
+    #                    is the user confirmation switch: LOW=ON, HIGH=OFF.
+    #                    GPIO16 is NOT the ON/OFF source in this mode.
+    # "GPIO_CONTROLLED" = GPIO16 (PIN_PRIMARY) is the physical ON/OFF actuator.
+    # None = legacy firmware without this field.
+    cooling_control_mode: Literal['MANUAL_SMPS', 'GPIO_CONTROLLED'] | None = None
+    # Raw GPIO6 switch state. True when GPIO6 is LOW (cooling physically ON).
+    # Only populated when cooling_control_mode == "MANUAL_SMPS".
+    manual_cooling_confirmed: bool | None = None
 
     @field_validator('timestamp')
     @classmethod
@@ -82,6 +108,10 @@ class Telemetry(Contract):
             if flag == 'current' and self.current_source == 'EMULATED':
                 if self.primary_current_a is None:
                     raise ValueError('current: EMULATED current source requires a non-null numeric primary_current_a')
+                continue
+            if flag == 'chamber' and self.chamber_source == 'DERIVED':
+                if self.chamber_temp_c is None and ok:
+                    raise ValueError('chamber: DERIVED chamber source requires a non-null numeric chamber_temp_c when healthy')
                 continue
             if any((getattr(self, f) is not None) != ok for f in fields):
                 raise ValueError(f'{flag}: invalid sensor values must be null; valid values required when healthy')

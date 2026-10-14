@@ -247,11 +247,11 @@ function kpis(){
   const isFresh = !isHardware || isLiveHardwareFresh();
 
   const list = [
-    ['Chamber temperature',t.chamber_temp_c,'°C','DS18B20 / chamber'],
+    ['Chamber temperature',t.chamber_temp_c,'°C',t.chamber_source==='DERIVED'?'Derived (heatsink - 10.0°C)':'DS18B20 / chamber'],
     ['Heatsink temperature',t.heatsink_temp_c,'°C','DS18B20 / hot side'],
     ['Ambient temperature',t.sht31_temp_c,'°C','SHT31 / ambient secondary'],
     ['Relative humidity',t.humidity_pct,'%','SHT31 / humidity'],
-    ['Primary current',t.primary_current_a,'A','ACS712 / primary branch'],
+    ['Primary current',t.primary_current_a,'A',t.current_source==='EMULATED'?'Emulated (hybrid mode)':'ACS712 / primary branch'],
     ['Door state',t.door_open,'','Reed switch / GPIO7'],
     ['GPS location',t.gps,'','NEO-6M / UART1'],
     ['Vibration',t.vibration_detected,'','LM393 / GPIO11']
@@ -331,8 +331,8 @@ function control(){
         <div class="big-state" style="color:var(--danger,#b23b2b)">OFFLINE</div>
         <p>ESP32 HARDWARE OFFLINE · No recent telemetry received (${esc(ageStr)})</p>
       </div>
-      ${row('Primary cooling', 'UNKNOWN / NO LIVE DATA')}
-      ${row('Backup cooling', 'NOT COMMISSIONED')}
+      ${row('Primary cooling', '—')}
+      ${row('Backup cooling', '—')}
       ${row('Door (Reed switch)', '—')}
       ${row('GPS status', '—')}
       ${row('Edge-reported state', 'OFFLINE')}
@@ -351,8 +351,20 @@ function control(){
         : (d.reason || 'ESP32 edge safety loop authoritative'))
     : (d.reason || 'Simulated closed-loop control');
 
-  const primaryCoolingText = t.primary_cooling === undefined ? 'UNAVAILABLE' : (t.primary_cooling ? 'ON' : 'OFF');
-  const backupCoolingText = isHardware ? 'NOT COMMISSIONED' : (t.backup_cooling === undefined ? 'UNAVAILABLE' : t.backup_cooling ? 'ON' : 'OFF');
+  // In MANUAL_SMPS mode, primary_cooling in the payload already reflects GPIO6 (manual
+  // confirmation switch), but we also check manual_cooling_confirmed directly as an
+  // explicit, unambiguous signal so the dashboard never falls back to the GPIO16 register.
+  let primaryCoolingText;
+  if (t.cooling_control_mode === 'MANUAL_SMPS' && t.manual_cooling_confirmed !== undefined && t.manual_cooling_confirmed !== null) {
+    primaryCoolingText = t.manual_cooling_confirmed ? 'ON' : 'OFF';
+  } else if (t.primary_cooling === undefined) {
+    primaryCoolingText = 'UNAVAILABLE';
+  } else {
+    primaryCoolingText = t.primary_cooling ? 'ON' : 'OFF';
+  }
+  const backupCoolingText = t.backup_source === 'VIRTUAL'
+    ? (t.backup_cooling ? 'ON' : 'OFF')
+    : (isHardware ? 'NOT COMMISSIONED' : (t.backup_cooling === undefined ? 'UNAVAILABLE' : t.backup_cooling ? 'ON' : 'OFF'));
   const doorText = t.door_open == null ? 'UNAVAILABLE' : (t.door_open ? ('OPEN (' + fmt(t.door_open_s, 0) + 's)') : 'CLOSED');
   const gpsText = t?.gps?.fix
     ? ('FIX (' + (t.gps.satellites || 0) + ' sats · ' + fmt(t.gps.latitude, 4) + ', ' + fmt(t.gps.longitude, 4) + ')')
@@ -570,7 +582,7 @@ function render(){
   if(page==='alerts')html=`<section class="card"><h2>Recorded faults</h2>${(cache.faults||[]).length?table(['Time','Mode','State','Reason','Source','Lifecycle'],cache.faults.map(e=>[clock(e.timestamp),e.payload.mode||'SYSTEM',e.payload.new_state,e.payload.reason,e.payload.source,e.payload.resolved?(e.payload.resolution||'RESOLVED'):'ACTIVE'])):'<div class="empty">No fault events recorded for this device.</div>'}</section>`;
   if(page==='history')html=`<section class="card"><div class="card-head"><h2>Telemetry history</h2><button id="download-history" class="secondary">Export JSON</button></div>${table(['Acquired','Sequence','Chamber °C','Current A','Observed state','Decision','Mode','Archived'],(cache.history||[]).map(r=>[clock(r.timestamp),r.sequence,fmt(r.payload.chamber_temp_c),fmt(r.payload.primary_current_a),r.payload.system_state,r.decision.state,r.mode,r.archived?'Yes':'No']))}</section>`;
   if(page==='analytics'){const m=system.model||{};html=`<section class="card"><div class="card-head"><h2>Held-out test results</h2>${badge(m.training_provenance||'UNAVAILABLE','warn')}</div>${table(['Estimator','Precision','Recall','F1','ROC AUC','Test samples'],Object.entries(m.test||{}).map(([name,v])=>[name,fmt(v.precision,3),fmt(v.recall,3),fmt(v.f1,3),fmt(v.roc_auc,3),v.samples]))}<p class="card-sub">${esc(m.split_method)}. Test evaluation on held-out datasets.</p></section><div class="three-col">${Object.entries(m.test||{}).map(([n,v])=>`<section class="card"><h2>${esc(n)} confusion matrix</h2>${table(['Actual / Predicted','Normal','Anomaly'],[['Normal',...v.confusion_matrix[0]],['Anomaly',...v.confusion_matrix[1]]])}</section>`).join('')}</div>`;}
-  if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health reported by source</h2>${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'current (ACS712)' : k, k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'PENDING CALIBRATION' : (v?'VALID':'INVALID'))).join('')}${row('GPS',t?.gps?.fix?'FIX':'NO FIX')}${t?.vibration_detected !== undefined ? row('Vibration', t.vibration_detected ? 'DETECTED' : 'NORMAL') : ''}${(t?.mode||appMode)==='HARDWARE'?row('Current input source',t?.current_source||'EMULATED'):''}${(t?.mode||appMode)==='HARDWARE'?row('ACS712 calibration',t?.current_calibrated?'CALIBRATED':'PENDING'):''}</section></div>`;
+  if(page==='health')html=`<div class="two-col equal"><section class="card"><h2>Software & connectivity</h2>${row('Telemetry freshness',latest?.connectivity)}${row('Seconds since reception',fmt(latest?.seconds_since_received))}${row('XGBoost + Random Forest',system.ml_ready?'LOADED':'UNAVAILABLE')}${row('Active Mode',appMode)}${row('Hardware validation',system.hardware_status)}${row('Buffered / dropped',system.simulation?.buffered_samples+' / '+system.simulation?.dropped_samples)}</section><section class="card"><h2>Sensor health & data provenance</h2>${(t?.mode||appMode)==='HARDWARE'?row('Chamber source',t?.chamber_source||'DERIVED'):''}${(t?.mode||appMode)==='HARDWARE'&&t?.chamber_formula?row('Chamber formula',t.chamber_formula):''}${(t?.mode||appMode)==='HARDWARE'&&t?.raw_chamber_temp_c!=null?row('Raw DS18B20 chamber',fmt(t.raw_chamber_temp_c,2)+' °C'):''}${(t?.mode||appMode)==='HARDWARE'?row('Heatsink source','DS18B20 (physical probe)'):''}${(t?.mode||appMode)==='HARDWARE'?row('Current input source',t?.current_source||'EMULATED'):''}${(t?.mode||appMode)==='HARDWARE'?row('ACS712 calibration',t?.current_calibrated?'CALIBRATED':'PENDING'):''}${(t?.mode||appMode)==='HARDWARE'?row('Backup source',t?.backup_source||'VIRTUAL'):''}${(t?.mode||appMode)==='HARDWARE'?row('Physical backup stage',t?.backup_commissioned?'COMMISSIONED':'NOT COMMISSIONED'):''}${(t?.mode||appMode)==='HARDWARE'?row('Cooling control mode',t?.cooling_control_mode||'MANUAL_SMPS'):''}${Object.entries(t?.sensor_health||{}).map(([k,v])=>row(k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'current (ACS712)' : k, k === 'current' && !v && (t?.mode || appMode) === 'HARDWARE' ? 'PENDING CALIBRATION' : (v?'VALID':'INVALID'))).join('')}${row('GPS',t?.gps?.fix?'FIX':'NO FIX')}${t?.vibration_detected !== undefined ? row('Vibration', t.vibration_detected ? 'DETECTED' : 'NORMAL') : ''}</section></div>`;
   if(page==='validation')html=`<section class="card"><div class="card-head"><div><h2>Physical measurement register</h2><p class="card-sub">Values stay empty until hardware evidence is submitted.</p></div><button id="export-validation" class="secondary">Export CSV</button></div>${table(['Measurement','Value','Status','Evidence source'],(cache.validation?.metrics||[]).map(m=>[m.metric,m.value??'—',m.status,m.measurement_source]))}</section>`;
   if(page==='archive')html=archiveView();
   

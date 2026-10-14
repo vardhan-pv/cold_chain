@@ -5,6 +5,9 @@ constexpr bool COMMISSIONED=false;
 constexpr int PIN_ONEWIRE=-1,PIN_SDA=-1,PIN_SCL=-1,PIN_CURRENT=-1,PIN_REED=-1;
 constexpr int PIN_GPS_RX=-1,PIN_GPS_TX=-1,PIN_PRIMARY=-1,PIN_BACKUP=-1;
 constexpr int PIN_GREEN=-1,PIN_YELLOW=-1,PIN_RED=-1,PIN_BUZZER=-1;
+constexpr bool BUZZER_ACTIVE_LOW = false;
+constexpr uint8_t BUZZER_ACTIVE = BUZZER_ACTIVE_LOW ? LOW : HIGH;
+constexpr uint8_t BUZZER_INACTIVE = BUZZER_ACTIVE_LOW ? HIGH : LOW;
 constexpr bool CURRENT_CALIBRATED=false;
 // Measured AT THE ADC after a verified voltage-conditioning interface.
 // Do not use the bare ACS712 5 V sensitivity here unless converted to ADC-side units.

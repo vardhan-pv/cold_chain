@@ -138,6 +138,15 @@ void sensorsBegin() {
   } else {
     Serial.println("[BOOT] Vibration SKIPPED (pin=-1)");
   }
+
+  if (PIN_COOLING_CONFIRM >= 0) {
+    pinMode(PIN_COOLING_CONFIRM, INPUT_PULLUP);
+    data.manualCoolingOk = true;
+    data.manualCoolingOn = (digitalRead(PIN_COOLING_CONFIRM) == LOW);
+    Serial.printf("[BOOT] Manual Cooling Confirm GPIO%d OK\n", PIN_COOLING_CONFIRM);
+  } else {
+    Serial.println("[BOOT] Manual Cooling Confirm SKIPPED (pin=-1)");
+  }
 }
 
 void gpsBegin() {
@@ -192,6 +201,10 @@ void sensorsTick(uint32_t now) {
     }
   }
 
+  if (data.manualCoolingOk && PIN_COOLING_CONFIRM >= 0) {
+    data.manualCoolingOn = (digitalRead(PIN_COOLING_CONFIRM) == LOW);
+  }
+
   if (PIN_CURRENT >= 0 && now - lastCurrent >= 50) {
     lastCurrent = now;
     uint32_t mv = analogReadMilliVolts(PIN_CURRENT);
@@ -204,17 +217,42 @@ void sensorsTick(uint32_t now) {
     } else {
       data.current = NAN;
     }
+  } else if (ENABLE_EMULATED_CURRENT) {
+    data.currentOK = false;
+    data.current = data.manualCoolingOn ? EMULATED_PRIMARY_CURRENT_A : 0.0f;
   }
 
   if (probes && conversion && now - conversionAt >= 800) {
     float rawChamber = probes->getTempC(activeChamberRom);
     float rawHeatsink = heatsinkRomDiscovered ? probes->getTempC(activeHeatsinkRom) : NAN;
 
-    data.chamberOK = validTemp(rawChamber);
-    data.heatsinkOK = heatsinkRomDiscovered && validTemp(rawHeatsink);
+    // Fallback to device index 0 and 1 if ROM match fails or ROM is unconfigured
+    if (!validTemp(rawChamber) && probes->getDeviceCount() > 0) {
+      float idx0 = probes->getTempCByIndex(0);
+      if (validTemp(idx0)) rawChamber = idx0;
+    }
+    if (!validTemp(rawHeatsink) && probes->getDeviceCount() > 1) {
+      float idx1 = probes->getTempCByIndex(1);
+      if (validTemp(idx1)) rawHeatsink = idx1;
+    }
 
-    data.chamber = data.chamberOK ? rawChamber : NAN;
+    // Real heatsink measurement is preserved untouched
+    data.heatsinkOK = validTemp(rawHeatsink);
     data.heatsink = data.heatsinkOK ? rawHeatsink : NAN;
+
+    // Preserved raw physical chamber reading
+    data.rawChamberOK = validTemp(rawChamber);
+    data.rawChamber = data.rawChamberOK ? rawChamber : NAN;
+
+    // Central derivation for hybrid demo mode:
+    // chamber_temp_c = heatsink_temp_c - 10.0 C
+    if (data.heatsinkOK && isfinite(data.heatsink)) {
+      data.chamber = data.heatsink - 10.0f;
+      data.chamberOK = true;
+    } else {
+      data.chamber = NAN;
+      data.chamberOK = false;
+    }
 
     lastProbe = now;
     conversion = false;
@@ -268,8 +306,10 @@ SensorData sensorSnapshot(uint32_t now) {
   if (now - lastProbe > SENSOR_TIMEOUT_MS) {
     result.chamberOK = false;
     result.heatsinkOK = false;
+    result.rawChamberOK = false;
     result.chamber = NAN;
     result.heatsink = NAN;
+    result.rawChamber = NAN;
   }
   if (now - lastCurrent > 500) {
     result.currentOK = false;
