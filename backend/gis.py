@@ -12,7 +12,7 @@ import urllib.request
 import urllib.parse
 from typing import Any
 from backend.routing import distance_km
-from backend.config import GOOGLE_MAPS_API_KEY, OPENROUTESERVICE_API_KEY, OVERPASS_API_URL
+from backend.config import GOOGLE_MAPS_API_KEY, OPENROUTESERVICE_API_KEY, OPENROUTESERVICE_URL, OVERPASS_API_URL
 
 log = logging.getLogger('cold_chain.gis')
 
@@ -197,21 +197,53 @@ def get_driving_route(origin_lat: float, origin_lon: float, dest_lat: float, des
 
     if OPENROUTESERVICE_API_KEY:
         try:
-            url = "https://api.openrouteservice.org/v2/directions/driving-car"
-            payload = json.dumps({
-                "coordinates": [[origin_lon, origin_lat], [dest_lon, dest_lat]]
-            }).encode('utf-8')
-            headers = {
-                "Authorization": OPENROUTESERVICE_API_KEY,
-                "Content-Type": "application/json"
-            }
-            res = _fetch_url(url, headers=headers, data=payload, timeout=8.0)
-            if res and 'routes' in res and len(res['routes']) > 0:
+            # Clean API key in case full query or URL was provided in environment
+            clean_key = OPENROUTESERVICE_API_KEY.split('&')[0].split('?api_key=')[-1].strip()
+            
+            # Method 1: GET request with API key query parameter (supported by HeiGIT / ORS)
+            get_query = urllib.parse.urlencode({
+                'api_key': clean_key,
+                'start': f"{origin_lon},{origin_lat}",
+                'end': f"{dest_lon},{dest_lat}"
+            })
+            get_url = f"{OPENROUTESERVICE_URL}?{get_query}"
+            res = _fetch_url(get_url, timeout=9.0)
+
+            # Method 2: POST request to api.openrouteservice.org fallback if GET did not return routes
+            if not res or ('features' not in res and 'routes' not in res):
+                post_url = "https://api.openrouteservice.org/v2/directions/driving-car"
+                payload = json.dumps({
+                    "coordinates": [[origin_lon, origin_lat], [dest_lon, dest_lat]]
+                }).encode('utf-8')
+                headers = {
+                    "Authorization": clean_key,
+                    "Content-Type": "application/json"
+                }
+                res = _fetch_url(post_url, headers=headers, data=payload, timeout=8.0)
+
+            # Parse GeoJSON format (returned by GET / HeiGIT)
+            if res and 'features' in res and len(res['features']) > 0:
+                feat = res['features'][0]
+                summary = feat.get('properties', {}).get('summary', {})
+                geom = feat.get('geometry', {})
+                raw_coords = geom.get('coordinates', [])
+                coords = [[p[1], p[0]] for p in raw_coords if len(p) >= 2]
+                if coords:
+                    route_result = {
+                        'distance_km': round(summary.get('distance', straight_dist * 1000) / 1000.0, 2),
+                        'duration_min': round(summary.get('duration', straight_dist * 1.5 * 60) / 60.0, 1),
+                        'route': coords,
+                        'source': 'OPENROUTESERVICE',
+                        'road_route_available': True,
+                        'status': 'OK'
+                    }
+
+            # Parse JSON routes format (returned by POST / api.openrouteservice.org)
+            elif res and 'routes' in res and len(res['routes']) > 0:
                 ors_route = res['routes'][0]
                 summary = ors_route.get('summary', {})
                 geom = ors_route.get('geometry')
                 
-                # If geometry is GeoJSON coordinates or polyline
                 coords = []
                 if isinstance(geom, dict) and 'coordinates' in geom:
                     coords = [[p[1], p[0]] for p in geom['coordinates']]

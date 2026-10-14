@@ -15,5 +15,6 @@ EMULATED_IDLE_CURRENT_A: float = 0.0
 # Real GIS / Mapping & Emergency Routing Providers:
 GOOGLE_MAPS_API_KEY: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
 OPENROUTESERVICE_API_KEY: str = os.getenv("OPENROUTESERVICE_API_KEY", "")
+OPENROUTESERVICE_URL: str = os.getenv("OPENROUTESERVICE_URL", "https://api.heigit.org/openrouteservice/v2/directions/driving-car")
 OVERPASS_API_URL: str = os.getenv("OVERPASS_API_URL", "https://overpass-api.de/api/interpreter")
 
