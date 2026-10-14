@@ -13,7 +13,7 @@ from ml.feature_engineering import features_for
 from ml.predictor import Predictor
 from backend.faults import update_faults
 from backend.commands import track
-from backend.config import ENABLE_EMULATED_CURRENT, EMULATED_PRIMARY_CURRENT_A, EMULATED_IDLE_CURRENT_A
+from backend.config import ENABLE_EMULATED_CURRENT, EMULATED_PRIMARY_CURRENT_A, EMULATED_IDLE_CURRENT_A, DEMO_GPS_LAT, DEMO_GPS_LNG
 
 def utc():
     return datetime.now(timezone.utc).isoformat()
@@ -348,10 +348,37 @@ class Service:
                 current_state = telemetry_data.get('system_state', current_state)
             is_online = age is not None and age <= 15.0
             virtual_override = bool(d.controller.get('virtual_backup_override', False)) if d.controller else False
+
+            nav_location = None
+            if t and isinstance(t.payload, dict):
+                gps_data = t.payload.get('gps', {}) or {}
+                if gps_data.get('fix') and gps_data.get('latitude') is not None and gps_data.get('longitude') is not None:
+                    try:
+                        plat = float(gps_data['latitude'])
+                        plon = float(gps_data['longitude'])
+                        if plat != 0.0 or plon != 0.0:
+                            nav_location = {
+                                'latitude': round(plat, 6),
+                                'longitude': round(plon, 6),
+                                'source': 'PHYSICAL_GPS',
+                                'timestamp': t.timestamp
+                            }
+                    except (ValueError, TypeError):
+                        pass
+            if not nav_location and DEMO_GPS_LAT is not None and DEMO_GPS_LNG is not None:
+                nav_location = {
+                    'latitude': round(float(DEMO_GPS_LAT), 6),
+                    'longitude': round(float(DEMO_GPS_LNG), 6),
+                    'source': 'DEMO_FALLBACK',
+                    'timestamp': (t.timestamp if t else d.last_seen) or utc()
+                }
+
             return {'device':serialize(d),'telemetry':serialize(t) if t else None,
                 'prediction':p.payload if p else None,'rerouting':route.payload if route and
                     current_state in ('CRITICAL_FAILURE','REROUTING') else None,
                 'connectivity':'ONLINE' if is_online else 'STALE' if age is not None else 'NO_DATA',
                 'seconds_since_received':round(age,1) if age is not None else None,
                 'online':is_online,'data_stale':not is_online,'last_seen':d.last_seen,
-                'virtual_backup_override':virtual_override}
+                'virtual_backup_override':virtual_override,
+                'navigation_location':nav_location,
+                'navigation_location_available':nav_location is not None}

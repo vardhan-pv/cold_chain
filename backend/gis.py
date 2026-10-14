@@ -35,7 +35,7 @@ def _fetch_url(url: str, headers: dict | None = None, data: bytes | None = None,
     return None
 
 
-def search_google_places(lat: float, lon: float, radius_m: int = 25000) -> list[dict[str, Any]]:
+def search_google_places(lat: float, lon: float, radius_m: int = 10000) -> list[dict[str, Any]]:
     """Search for real cold storage facilities via Google Places Nearby Search."""
     if not GOOGLE_MAPS_API_KEY:
         return []
@@ -59,8 +59,9 @@ def search_google_places(lat: float, lon: float, radius_m: int = 25000) -> list[
         if p_lat is None or p_lon is None:
             continue
         dist = distance_km(lat, lon, p_lat, p_lon)
+        place_id = str(place.get('place_id', 'unknown'))
         facilities.append({
-            'id': f"GP-{place.get('place_id', 'unknown')}",
+            'id': f"GP-{place_id}",
             'name': place.get('name', 'Refrigerated Facility'),
             'latitude': round(p_lat, 6),
             'longitude': round(p_lon, 6),
@@ -69,44 +70,59 @@ def search_google_places(lat: float, lon: float, radius_m: int = 25000) -> list[
             'verified_external': True,
             'address': place.get('vicinity') or place.get('formatted_address') or 'Location verified via Google Places',
             'place_type': 'refrigerated_warehouse',
+            'osm_type': 'google_place',
+            'osm_id': place_id,
             'available': True
         })
     return facilities
 
 
-def search_overpass(lat: float, lon: float, radius_m: int = 25000) -> list[dict[str, Any]]:
+def search_overpass(lat: float, lon: float, radius_m: int = 10000) -> list[dict[str, Any]]:
     """Search for real cold storage/warehouse facilities via OpenStreetMap Overpass API."""
-    # Query warehouses and cold storage nodes/ways within radius
+    # Query warehouses, logistics, and cold storage nodes/ways within radius
     overpass_query = f"""
-    [out:json][timeout:12];
+    [out:json][timeout:15];
     (
       node["industrial"="warehouse"](around:{radius_m},{lat},{lon});
       way["industrial"="warehouse"](around:{radius_m},{lat},{lon});
       node["warehouse"="cold_storage"](around:{radius_m},{lat},{lon});
+      way["warehouse"="cold_storage"](around:{radius_m},{lat},{lon});
       node["cold_storage"](around:{radius_m},{lat},{lon});
+      way["cold_storage"](around:{radius_m},{lat},{lon});
       node["building"="warehouse"](around:{radius_m},{lat},{lon});
       way["building"="warehouse"](around:{radius_m},{lat},{lon});
+      node["office"="logistics"](around:{radius_m},{lat},{lon});
+      way["office"="logistics"](around:{radius_m},{lat},{lon});
     );
-    out center 35;
+    out center 40;
     """
     data = overpass_query.encode('utf-8')
     res = _fetch_url(OVERPASS_API_URL, data=data, timeout=15.0)
     if not res or 'elements' not in res:
         return []
 
-    cold_keywords = ('cold', 'storage', 'freeze', 'chiller', 'refrigerat', 'ice', 'perishable', 'hvac')
+    # Conservative cold-storage filtering: only accept facilities with explicit cold-storage
+    # tags or cold chain / refrigeration / freezer / chiller keywords in name or description.
+    cold_keywords = (
+        'cold storage', 'cold chain', 'cold-chain', 'coldstore', 'refrigerat',
+        'freezer', 'freeze', 'chiller', 'temperature controlled', 'perishable',
+        'ice plant', 'cool warehouse', 'hvac'
+    )
     facilities = []
     for el in res.get('elements', []):
         tags = el.get('tags', {})
         name = tags.get('name') or tags.get('operator') or tags.get('description') or ''
         desc = tags.get('description', '')
+        name_lower = name.lower()
+        desc_lower = desc.lower()
 
-        # Check relevance: explicitly marked cold storage or has matching keywords in name/tags
+        # Check relevance: explicitly tagged cold storage or has matching keywords
         is_cold = (
             'cold_storage' in tags or
             tags.get('warehouse') == 'cold_storage' or
-            any(k in name.lower() for k in cold_keywords) or
-            any(k in desc.lower() for k in cold_keywords)
+            tags.get('cooling') == 'yes' or
+            any(k in name_lower for k in cold_keywords) or
+            any(k in desc_lower for k in cold_keywords)
         )
         if not is_cold:
             continue
@@ -116,13 +132,15 @@ def search_overpass(lat: float, lon: float, radius_m: int = 25000) -> list[dict[
         if c_lat is None or c_lon is None:
             continue
 
-        display_name = name or f"Warehouse Facility ({tags.get('industrial') or tags.get('building') or 'Storage'})"
+        osm_type = str(el.get('type', 'node'))
+        osm_id = str(el.get('id', '0'))
+        display_name = name or f"Cold Storage Facility ({tags.get('industrial') or tags.get('building') or 'Warehouse'})"
         dist = distance_km(lat, lon, c_lat, c_lon)
         addr_parts = [tags.get('addr:street'), tags.get('addr:city'), tags.get('addr:postcode')]
         addr_str = ', '.join([p for p in addr_parts if p]) or tags.get('addr:full') or 'Location verified via OpenStreetMap'
 
         facilities.append({
-            'id': f"OSM-{el.get('type','node')}-{el.get('id', 0)}",
+            'id': f"OSM-{osm_type}-{osm_id}",
             'name': display_name,
             'latitude': round(c_lat, 6),
             'longitude': round(c_lon, 6),
@@ -131,15 +149,17 @@ def search_overpass(lat: float, lon: float, radius_m: int = 25000) -> list[dict[
             'verified_external': True,
             'address': addr_str,
             'place_type': tags.get('industrial') or tags.get('building') or 'refrigerated_warehouse',
+            'osm_type': osm_type,
+            'osm_id': osm_id,
             'available': True
         })
     return facilities
 
 
-def get_nearby_cooling_facilities(lat: float, lon: float, radius_km: float = 30.0) -> dict[str, Any]:
+def get_nearby_cooling_facilities(lat: float, lon: float, radius_km: float = 10.0) -> dict[str, Any]:
     """Retrieve nearby verified cold storage facilities with caching and provider fallback."""
     now = time.time()
-    cache_key = f"{round(lat, 2)}:{round(lon, 2)}"
+    cache_key = f"{round(lat, 2)}:{round(lon, 2)}:r{round(radius_km, 1)}"
     if cache_key in _FACILITY_CACHE:
         cached_time, cached_facilities, provider = _FACILITY_CACHE[cache_key]
         if now - cached_time < FACILITY_CACHE_TTL_S:

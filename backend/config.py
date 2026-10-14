@@ -18,3 +18,8 @@ OPENROUTESERVICE_API_KEY: str = os.getenv("OPENROUTESERVICE_API_KEY", "")
 OPENROUTESERVICE_URL: str = os.getenv("OPENROUTESERVICE_URL", "https://api.heigit.org/openrouteservice/v2/directions/driving-car")
 OVERPASS_API_URL: str = os.getenv("OVERPASS_API_URL", "https://overpass-api.de/api/interpreter")
 
+# Navigation Demo / Fallback Coordinates:
+# Priority: Physical ESP32 GPS takes precedence. If no satellite fix, these coordinates allow real map discovery.
+DEMO_GPS_LAT: float | None = float(os.getenv("DEMO_GPS_LAT")) if os.getenv("DEMO_GPS_LAT") else None
+DEMO_GPS_LNG: float | None = float(os.getenv("DEMO_GPS_LNG")) if os.getenv("DEMO_GPS_LNG") else None
+

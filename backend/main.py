@@ -1,4 +1,4 @@
-import asyncio, csv, io, json, logging, os, secrets, uuid
+import asyncio, csv, io, json, logging, math, os, secrets, uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Depends, Header, HTTPException, Query
@@ -144,85 +144,119 @@ def create_app(database_url=None,admin_token=None,models=None,run_simulation=Fal
         return {**result,'device_id':data.device_id,'sequence':data.sequence,
                 'stored':not result['duplicate'],'session_id':data.boot_id}
 
-    @app.get('/api/v1/nearby-cooling', dependencies=auth)
-    @app.get('/api/nearby-cooling', dependencies=auth)
-    def nearby_cooling(device_id: str):
+    def resolve_nav_location(device_id: str) -> tuple[dict | None, bool, str]:
         dev_info = service.latest(device_id)
         d = dev_info.get('device') or {}
         t_row = dev_info.get('telemetry')
         payload = t_row.get('payload', {}) if t_row else {}
         gps = payload.get('gps') or {}
+        timestamp = (t_row.get('timestamp') if t_row else None) or utc().isoformat()
+        is_offline = (d.get('mode') == 'HARDWARE' and dev_info.get('online') is False)
 
-        if d.get('mode') == 'HARDWARE' and dev_info.get('online') is False:
+        # Priority 1: Physical ESP32 GPS if valid fix exists
+        if gps.get('fix') is True and gps.get('latitude') is not None and gps.get('longitude') is not None:
+            try:
+                plat = float(gps['latitude'])
+                plon = float(gps['longitude'])
+                if math.isfinite(plat) and math.isfinite(plon):
+                    return {
+                        'latitude': round(plat, 6),
+                        'longitude': round(plon, 6),
+                        'source': 'PHYSICAL_GPS',
+                        'timestamp': timestamp,
+                        'satellites': int(gps.get('satellites') or 0),
+                        'gps_fix': True,
+                        'navigation_location_available': True
+                    }, is_offline, ''
+            except (ValueError, TypeError):
+                pass
+
+        # Priority 2: Configured fallback/demo location if GPS module has no fix
+        import backend.config as cfg
+        if cfg.DEMO_GPS_LAT is not None and cfg.DEMO_GPS_LNG is not None:
+            return {
+                'latitude': round(float(cfg.DEMO_GPS_LAT), 6),
+                'longitude': round(float(cfg.DEMO_GPS_LNG), 6),
+                'source': 'DEMO_FALLBACK',
+                'timestamp': timestamp,
+                'satellites': 0,  # Never fabricate satellites
+                'gps_fix': False, # Physical gps.fix remains false
+                'navigation_location_available': True
+            }, is_offline, ''
+
+        return None, is_offline, 'GPS NO FIX: Waiting for satellite lock'
+
+    @app.get('/api/v1/nearby-cold-storages', dependencies=auth)
+    @app.get('/api/nearby-cold-storages', dependencies=auth)
+    @app.get('/api/v1/nearby-cooling', dependencies=auth)
+    @app.get('/api/nearby-cooling', dependencies=auth)
+    def nearby_cold_storages(device_id: str, radius_km: float = Query(default=10.0, ge=1.0, le=100.0)):
+        nav_loc, is_offline, err_msg = resolve_nav_location(device_id)
+
+        if not nav_loc:
             return {
                 'device_id': device_id,
-                'gps_fix': False,
-                'hardware_offline': True,
+                'location': None,
+                'hardware_offline': is_offline,
                 'facilities': [],
-                'message': 'HARDWARE OFFLINE: NO LIVE GPS DATA'
+                'message': ('HARDWARE OFFLINE: NO LIVE GPS DATA' if is_offline else err_msg)
             }
 
-        if not gps.get('fix') or gps.get('latitude') is None or gps.get('longitude') is None:
-            return {
-                'device_id': device_id,
-                'gps_fix': False,
-                'hardware_offline': False,
-                'facilities': [],
-                'message': 'GPS NO FIX: Waiting for satellite lock'
-            }
-
-        lat = float(gps['latitude'])
-        lon = float(gps['longitude'])
-        result = get_nearby_cooling_facilities(lat, lon, radius_km=35.0)
+        lat = nav_loc['latitude']
+        lon = nav_loc['longitude']
+        result = get_nearby_cooling_facilities(lat, lon, radius_km=radius_km)
         facilities = result['facilities']
         nearest = facilities[0] if facilities else None
 
-        return {
+        resp = {
             'device_id': device_id,
-            'gps_fix': True,
-            'hardware_offline': False,
-            'current_location': {
+            'location': {
                 'latitude': lat,
                 'longitude': lon,
-                'satellites': gps.get('satellites', 0),
-                'source': gps.get('source', 'GPS')
+                'source': nav_loc['source'],
+                'timestamp': nav_loc.get('timestamp')
             },
-            'facility_provider': result.get('facility_provider') or result.get('provider') or 'OVERPASS',
-            'facilities': facilities[:10],
+            'navigation_location': nav_loc,
+            'hardware_offline': is_offline,
+            'facilities': facilities,
+            'nearest_facility': nearest,
             'nearest_cooling_facility': nearest,
-            'message': 'Verified nearby cooling facilities retrieved' if facilities else 'No verified nearby cooling facility found'
+            'facility_provider': result.get('provider') or 'OPENSTREETMAP',
+            'radius_km': radius_km
         }
+        if not facilities:
+            resp['message'] = 'No verified cold-storage facilities found nearby'
+        else:
+            resp['message'] = f"Found {len(facilities)} verified cold-storage facilities within {radius_km} km"
+        return resp
 
+    @app.get('/api/v1/route-to-facility', dependencies=auth)
+    @app.get('/api/route-to-facility', dependencies=auth)
     @app.get('/api/v1/route-to-cooling', dependencies=auth)
     @app.get('/api/route-to-cooling', dependencies=auth)
-    def route_to_cooling(
+    def route_to_facility(
         device_id: str,
         facility_id: str | None = None,
         dest_lat: float | None = None,
         dest_lon: float | None = None,
         dest_name: str | None = None
     ):
-        dev_info = service.latest(device_id)
-        d = dev_info.get('device') or {}
-        t_row = dev_info.get('telemetry')
-        payload = t_row.get('payload', {}) if t_row else {}
-        gps = payload.get('gps') or {}
+        nav_loc, is_offline, err_msg = resolve_nav_location(device_id)
 
-        if d.get('mode') == 'HARDWARE' and dev_info.get('online') is False:
-            raise HTTPException(409, 'HARDWARE OFFLINE: NO LIVE GPS DATA')
+        if not nav_loc:
+            if is_offline:
+                raise HTTPException(409, 'HARDWARE OFFLINE: NO LIVE GPS DATA')
+            raise HTTPException(422, err_msg or 'GPS NO FIX: Waiting for satellite lock')
 
-        if not gps.get('fix') or gps.get('latitude') is None or gps.get('longitude') is None:
-            raise HTTPException(422, 'GPS NO FIX: Waiting for satellite lock')
-
-        origin_lat = float(gps['latitude'])
-        origin_lon = float(gps['longitude'])
+        origin_lat = nav_loc['latitude']
+        origin_lon = nav_loc['longitude']
 
         target_lat = dest_lat
         target_lon = dest_lon
-        target_name = dest_name or 'Refrigerated Facility'
+        target_name = dest_name or 'Cold Storage Facility'
 
         if target_lat is None or target_lon is None:
-            facilities = get_nearby_cooling_facilities(origin_lat, origin_lon)['facilities']
+            facilities = get_nearby_cooling_facilities(origin_lat, origin_lon, radius_km=50.0)['facilities']
             matched = next((f for f in facilities if f['id'] == facility_id), None) if facility_id else None
             if matched:
                 target_lat = matched['latitude']
@@ -246,9 +280,10 @@ def create_app(database_url=None,admin_token=None,models=None,run_simulation=Fal
                 'latitude': target_lat,
                 'longitude': target_lon
             },
-            'route': route_info['route'],
             'distance_km': route_info['distance_km'],
             'duration_min': route_info['duration_min'],
+            'geometry': route_info.get('route', []),
+            'route': route_info.get('route', []),
             'source': route_info['source'],
             'road_route_available': route_info.get('road_route_available', False)
         }

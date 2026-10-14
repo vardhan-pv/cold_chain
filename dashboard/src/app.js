@@ -610,7 +610,10 @@ const mapState = {
   routeLoading: false,
   routeError: null,
   facilitiesError: null,
-  needsFitBounds: false
+  needsFitBounds: false,
+  followVehicle: true,
+  searchRadiusKm: 10.0,
+  navLocation: null
 };
 
 function resetMapState(){
@@ -622,29 +625,82 @@ function resetMapState(){
   mapState.lastFetchTime = 0;
   mapState.routeError = null;
   mapState.facilitiesError = null;
+  mapState.navLocation = null;
   if (mapState.facilityLayer) mapState.facilityLayer.clearLayers();
   if (mapState.routeLayer) mapState.routeLayer.clearLayers();
   mapState.facilityMarkers.clear();
 }
 
-async function fetchNearbyFacilities(devId) {
+function getActiveNavLocation() {
+  const latest = cache.latest;
+  const t = latest?.telemetry?.payload;
+  // 1. Physical ESP32 GPS if valid fix exists
+  if (t?.gps?.fix && Number.isFinite(t?.gps?.latitude) && Number.isFinite(t?.gps?.longitude)) {
+    return {
+      latitude: t.gps.latitude,
+      longitude: t.gps.longitude,
+      source: 'PHYSICAL_GPS',
+      sourceLabel: 'Physical GPS',
+      satellites: t.gps.satellites || 0,
+      timestamp: latest?.telemetry?.timestamp || latest?.timestamp,
+      isFallback: false
+    };
+  }
+  // 2. Normalized navigation_location from backend
+  if (latest?.navigation_location && Number.isFinite(latest.navigation_location.latitude) && Number.isFinite(latest.navigation_location.longitude)) {
+    const isPhysical = latest.navigation_location.source === 'PHYSICAL_GPS';
+    return {
+      latitude: latest.navigation_location.latitude,
+      longitude: latest.navigation_location.longitude,
+      source: latest.navigation_location.source,
+      sourceLabel: isPhysical ? 'Physical GPS' : 'Navigation fallback active (Demo)',
+      satellites: isPhysical ? (t?.gps?.satellites || 0) : 0, // truthful: satellites remains 0 for demo fallback
+      timestamp: latest.navigation_location.timestamp || latest?.timestamp,
+      isFallback: !isPhysical
+    };
+  }
+  // 3. Fallback stored from facility API response
+  if (mapState.navLocation && Number.isFinite(mapState.navLocation.latitude) && Number.isFinite(mapState.navLocation.longitude)) {
+    const isPhysical = mapState.navLocation.source === 'PHYSICAL_GPS';
+    return {
+      latitude: mapState.navLocation.latitude,
+      longitude: mapState.navLocation.longitude,
+      source: mapState.navLocation.source,
+      sourceLabel: isPhysical ? 'Physical GPS' : 'Navigation fallback active (Demo)',
+      satellites: isPhysical ? (t?.gps?.satellites || 0) : 0,
+      timestamp: mapState.navLocation.timestamp || latest?.timestamp,
+      isFallback: !isPhysical
+    };
+  }
+  return null;
+}
+
+async function fetchNearbyFacilities(devId, radiusKm) {
   if (mapState.facilitiesLoading) return;
   mapState.facilitiesLoading = true;
   mapState.facilitiesError = null;
+  const radius = radiusKm || mapState.searchRadiusKm || 10;
+  mapState.searchRadiusKm = radius;
   try {
-    const res = await api('v1/nearby-cooling?device_id=' + encodeURIComponent(devId));
+    const res = await api(`v1/nearby-cold-storages?device_id=${encodeURIComponent(devId)}&radius_km=${encodeURIComponent(radius)}`);
+    if (res.location) {
+      mapState.navLocation = res.location;
+    }
     mapState.facilities = res.facilities || [];
     mapState.nearestFacility = mapState.facilities.length > 0 ? mapState.facilities[0] : null;
-    mapState.facilitiesError = mapState.facilities.length === 0 ? (res.message || 'No verified nearby cooling facility found') : null;
+    if (mapState.facilities.length === 0) {
+      mapState.facilitiesError = res.message || 'No verified cold-storage facilities found nearby';
+    }
     renderFacilityMarkers();
     updateMapSidebar();
   } catch (err) {
     mapState.facilities = [];
     mapState.nearestFacility = null;
-    mapState.facilitiesError = 'Nearby facility service temporarily unavailable';
+    mapState.facilitiesError = 'Cold-storage search temporarily unavailable';
     updateMapSidebar();
   } finally {
     mapState.facilitiesLoading = false;
+    updateMapSidebar();
   }
 }
 
@@ -655,14 +711,14 @@ async function calculateRoute(devId, facilityId) {
   mapState.selectedFacilityId = facilityId;
   updateMapSidebar();
   try {
-    const res = await api(`v1/route-to-cooling?device_id=${encodeURIComponent(devId)}&facility_id=${encodeURIComponent(facilityId)}`);
+    const res = await api(`v1/route-to-facility?device_id=${encodeURIComponent(devId)}&facility_id=${encodeURIComponent(facilityId)}`);
     mapState.currentRoute = res;
     mapState.needsFitBounds = true;
     renderFacilityMarkers();
     renderRouteLayer();
     updateMapSidebar();
   } catch (err) {
-    mapState.routeError = 'Route unavailable. Facility location still shown';
+    mapState.routeError = 'Route temporarily unavailable';
     updateMapSidebar();
   } finally {
     mapState.routeLoading = false;
@@ -674,25 +730,29 @@ function renderFacilityMarkers() {
   mapState.facilityLayer.clearLayers();
   mapState.facilityMarkers.clear();
 
-  mapState.facilities.forEach(f => {
+  mapState.facilities.forEach((f, idx) => {
     const isSelected = (mapState.currentRoute?.destination?.id === f.id) || (mapState.selectedFacilityId === f.id);
+    const isNearest = idx === 0;
     const facilityIcon = L.divIcon({
       className: '',
-      html: `<div class="facility-pin-wrapper ${isSelected ? 'active-dest' : ''}"><span>❄</span></div>`,
-      iconSize: [26, 26],
-      iconAnchor: [13, 26],
-      popupAnchor: [0, -26]
+      html: `<div class="facility-pin-wrapper ${isSelected ? 'active-dest' : (isNearest ? 'nearest-dest' : '')}" title="${esc(f.name)}"><span>❄</span></div>`,
+      iconSize: [28, 28],
+      iconAnchor: [14, 28],
+      popupAnchor: [0, -28]
     });
 
     const marker = L.marker([f.latitude, f.longitude], { icon: facilityIcon });
     marker.bindPopup(`
-      <div style="min-width:180px;">
-        <strong>${esc(f.name)}</strong><br>
-        <span style="color:#527362;font-size:11px;">${fmt(f.distance_km, 2)} km away</span><br>
-        ${f.address ? `<span style="color:#6e8576;font-size:10px;display:block;margin:3px 0;">${esc(f.address)}</span>` : ''}
+      <div style="min-width:190px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+          <strong style="font-size:12px;color:#123328;">${esc(f.name)}</strong>
+          ${isNearest ? '<span class="nearest-tag">NEAREST</span>' : ''}
+        </div>
+        <span style="color:#0f8478;font-size:11px;font-weight:600;">Distance: ${fmt(f.distance_km, 1)} km</span><br>
+        ${f.address ? `<span style="color:#527362;font-size:10px;display:block;margin:3px 0;">${esc(f.address)}</span>` : ''}
         <span style="font-size:9px;color:#859b8d;text-transform:uppercase;">Source: ${esc(f.source)}</span><br>
-        <button class="btn-route-action btn-popup-route" data-id="${esc(f.id)}" style="margin-top:8px;width:100%;">
-          ${isSelected ? 'Active destination' : 'Route here'}
+        <button type="button" class="btn-route-action btn-popup-route" data-id="${esc(f.id)}" style="margin-top:8px;width:100%;">
+          ${isSelected ? '✓ Active route destination' : 'Route Here'}
         </button>
       </div>
     `);
@@ -705,17 +765,18 @@ function renderRouteLayer() {
   if (!mapState.instance || !mapState.routeLayer || typeof L === 'undefined') return;
   mapState.routeLayer.clearLayers();
 
-  if (mapState.currentRoute && Array.isArray(mapState.currentRoute.route) && mapState.currentRoute.route.length > 0) {
-    const poly = L.polyline(mapState.currentRoute.route, {
+  const routeCoords = mapState.currentRoute?.geometry || mapState.currentRoute?.route;
+  if (routeCoords && Array.isArray(routeCoords) && routeCoords.length > 0) {
+    const poly = L.polyline(routeCoords, {
       color: '#b23b2b',
       weight: 5,
-      opacity: 0.88,
+      opacity: 0.9,
       lineCap: 'round',
       lineJoin: 'round'
     }).addTo(mapState.routeLayer);
 
     if (mapState.needsFitBounds) {
-      mapState.instance.fitBounds(poly.getBounds(), { padding: [40, 40] });
+      mapState.instance.fitBounds(poly.getBounds(), { padding: [50, 50], maxZoom: 15 });
       mapState.needsFitBounds = false;
     }
   }
@@ -728,66 +789,105 @@ function updateMapSidebar() {
   const t = latest?.telemetry?.payload;
   const d = latest?.telemetry?.decision || {};
   const isHardware = (t?.mode || appMode) === 'HARDWARE';
+  const isFresh = !isHardware || isLiveHardwareFresh();
   const edgeState = t?.system_state || 'NORMAL';
   const authoritativeState = isHardware ? edgeState : (d.state || edgeState || 'NORMAL');
   const isReroutingActive = authoritativeState === 'CRITICAL_FAILURE' || authoritativeState === 'REROUTING';
   const nearest = mapState.nearestFacility;
   const route = mapState.currentRoute;
+  const navLoc = getActiveNavLocation();
+  const isOnline = isFresh && (latest?.online !== false);
 
   let nearestHtml = '';
   if (nearest) {
     const isSelected = route?.destination?.id === nearest.id;
     nearestHtml = `<div class="nearest-facility-box">
-      <strong>${esc(nearest.name)}</strong>
-      <p>${fmt(nearest.distance_km, 2)} km away · ${esc(nearest.source)}</p>
-      <button class="btn-route-action ${isSelected ? 'active' : ''}" id="btn-route-nearest" data-id="${esc(nearest.id)}">
-        ${isSelected ? 'Active destination' : 'Route to nearest'}
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <strong>${esc(nearest.name)}</strong>
+        <span class="nearest-tag">NEAREST</span>
+      </div>
+      <p><strong>${fmt(nearest.distance_km, 1)} km</strong> away · Verified OpenStreetMap</p>
+      ${nearest.address ? `<p style="font-size:10px;color:var(--muted);">${esc(nearest.address)}</p>` : ''}
+      <button type="button" class="btn-route-action ${isSelected ? 'active' : ''}" id="btn-route-nearest" data-id="${esc(nearest.id)}">
+        ${isSelected ? '✓ Route Active' : 'Route Here'}
       </button>
     </div>`;
   } else if (mapState.facilitiesLoading) {
-    nearestHtml = `<div class="nearest-facility-box"><p>Searching verified cooling facilities...</p></div>`;
+    nearestHtml = `<div class="nearest-facility-box"><p>Searching verified cold-storage facilities...</p></div>`;
   } else {
-    nearestHtml = `<div class="nearest-facility-box"><p>${esc(mapState.facilitiesError || 'No verified nearby cooling facility found')}</p></div>`;
+    nearestHtml = `<div class="nearest-facility-box empty-facility-box">
+      <p style="margin-bottom:8px;">${esc(mapState.facilitiesError || 'No verified cold-storage facilities found nearby')}</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button type="button" class="map-btn btn-radius-expand" data-radius="25">Search 25 km</button>
+        <button type="button" class="map-btn btn-radius-expand" data-radius="50">Search 50 km</button>
+      </div>
+    </div>`;
   }
 
-  const facilityListHtml = mapState.facilities.slice(0, 5).map(f => {
+  const facilityListHtml = mapState.facilities.map((f, idx) => {
     const isSelected = route?.destination?.id === f.id;
+    const isNearest = idx === 0;
     return `<div class="facility-card-item ${isSelected ? 'selected' : ''}">
       <div class="facility-info">
-        <span class="facility-title" title="${esc(f.name)}">${esc(f.name)}</span>
-        <div class="facility-meta">${fmt(f.distance_km, 2)} km · ${esc(f.source)}</div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="facility-title" title="${esc(f.name)}">${esc(f.name)}</span>
+          ${isNearest ? '<span class="nearest-tag">NEAREST</span>' : ''}
+        </div>
+        <div class="facility-meta">${fmt(f.distance_km, 1)} km · ${esc(f.address || f.source)}</div>
       </div>
-      <button class="btn-route-action ${isSelected ? 'active' : ''} btn-list-route" data-id="${esc(f.id)}">
-        ${isSelected ? 'Routed' : 'Route'}
+      <button type="button" class="btn-route-action ${isSelected ? 'active' : ''} btn-list-route" data-id="${esc(f.id)}">
+        ${isSelected ? 'Active' : 'Route'}
       </button>
     </div>`;
   }).join('');
 
   sidebar.innerHTML = `
     <div class="map-stats-card">
-      <h3>Telemetry & Navigation</h3>
+      <h3>Vehicle Tracking</h3>
       <div class="map-stat-row"><span>Device:</span><strong>${esc(device)}</strong></div>
-      <div class="map-stat-row"><span>GPS:</span><strong>FIX (${t?.gps?.satellites || 0} sats)</strong></div>
-      <div class="map-stat-row"><span>Coordinates:</span><strong>${fmt(t?.gps?.latitude, 4)}, ${fmt(t?.gps?.longitude, 4)}</strong></div>
-      <div class="map-stat-row"><span>Rerouting:</span><strong>${isReroutingActive ? 'ACTIVE' : (mapState.facilities.length ? 'READY' : 'UNAVAILABLE')}</strong></div>
-      ${route ? `
-        <div class="map-stat-row"><span>Destination:</span><strong>${esc(route.destination?.name || 'Cooling Facility')}</strong></div>
-        <div class="map-stat-row"><span>Distance:</span><strong>${fmt(route.distance_km, 1)} km</strong></div>
-        <div class="map-stat-row"><span>Est. drive:</span><strong>${fmt(route.duration_min, 0)} min</strong></div>
-      ` : ''}
-      ${mapState.routeError ? `<div class="map-stat-row" style="color:var(--danger,#b23b2b);font-size:10px;">${esc(mapState.routeError)}</div>` : ''}
+      <div class="map-stat-row"><span>Status:</span><strong style="color:${isOnline ? '#0f8478' : '#b23b2b'};">${isOnline ? 'ONLINE' : 'HARDWARE OFFLINE'}</strong></div>
+      <div class="map-stat-row"><span>Navigation:</span><strong>AVAILABLE</strong></div>
+      <div class="map-stat-row"><span>Location source:</span><strong>${esc(navLoc?.sourceLabel || '—')}</strong></div>
+      <div class="map-stat-row"><span>Coordinates:</span><strong>${navLoc ? `${fmt(navLoc.latitude, 4)}, ${fmt(navLoc.longitude, 4)}` : '—'}</strong></div>
+      <div class="map-stat-row"><span>Satellites:</span><strong>${navLoc?.satellites || 0} ${navLoc?.isFallback ? '(demo fallback)' : 'sats'}</strong></div>
+      <div class="map-stat-row"><span>Last update:</span><strong>${esc(clock(navLoc?.timestamp || latest?.timestamp))}</strong></div>
     </div>
 
     <div class="map-stats-card">
-      <h3>Nearest Cooling Facility</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <h3 style="margin:0;">Emergency Rerouting</h3>
+        <span class="badge ${isReroutingActive ? 'danger' : (mapState.facilities.length ? 'success' : 'neutral')}">
+          ${isReroutingActive ? 'ACTIVE' : (mapState.facilities.length ? 'READY' : 'UNAVAILABLE')}
+        </span>
+      </div>
+      ${isReroutingActive ? `
+        <div class="reroute-active-banner">
+          <strong style="color:#b23b2b;display:block;margin-bottom:4px;">⚡ REROUTING ACTIVE</strong>
+          <div class="map-stat-row"><span>Destination:</span><strong>${esc(route?.destination?.name || nearest?.name || 'Nearest Cold Storage')}</strong></div>
+          <div class="map-stat-row"><span>Distance:</span><strong>${fmt(route?.distance_km || nearest?.distance_km, 1)} km</strong></div>
+          <div class="map-stat-row"><span>ETA:</span><strong>${fmt(route?.duration_min || ((nearest?.distance_km || 0) * 1.5), 0)} min</strong></div>
+        </div>
+      ` : (route ? `
+        <div class="map-stat-row"><span>Destination:</span><strong>${esc(route.destination?.name || 'Cooling Facility')}</strong></div>
+        <div class="map-stat-row"><span>Distance:</span><strong>${fmt(route.distance_km, 1)} km</strong></div>
+        <div class="map-stat-row"><span>ETA:</span><strong>${fmt(route.duration_min, 0)} min</strong></div>
+        <div class="map-stat-row"><span>Route source:</span><strong>${esc(route.source)}</strong></div>
+      ` : `
+        <p style="font-size:11px;color:var(--muted);margin:4px 0 0 0;">System standing by. Nearest verified cold storage will be selected automatically upon cooling failure.</p>
+      `)}
+      ${mapState.routeError ? `<div style="color:var(--danger,#b23b2b);font-size:11px;margin-top:6px;font-weight:600;">△ ${esc(mapState.routeError)}</div>` : ''}
+    </div>
+
+    <div class="map-stats-card">
+      <h3>Nearest Cold Storage</h3>
       ${nearestHtml}
     </div>
 
     ${mapState.facilities.length ? `
       <div class="map-stats-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <h3 style="margin:0;">Discovered Facilities (${mapState.facilities.length})</h3>
-          ${route ? `<button id="btn-clear-route" class="secondary" style="padding:2px 6px;font-size:9px;">Clear route</button>` : ''}
+          <h3 style="margin:0;">Nearby Cold Storages (${mapState.facilities.length})</h3>
+          ${route ? `<button type="button" id="btn-clear-route" class="secondary" style="padding:2px 8px;font-size:10px;">Clear route</button>` : ''}
         </div>
         <div class="facility-list">
           ${facilityListHtml}
@@ -803,8 +903,9 @@ function map(){
   const d = latest?.telemetry?.decision || {};
   const isHardware = (t?.mode || appMode) === 'HARDWARE';
   const isFresh = !isHardware || isLiveHardwareFresh();
+  const navLoc = getActiveNavLocation();
 
-  if (isHardware && !isFresh) {
+  if (isHardware && !isFresh && !navLoc) {
     return `<section class="card map-panel">
       <div class="card-head">
         <div>
@@ -820,7 +921,7 @@ function map(){
     </section>`;
   }
 
-  if (!t?.gps?.fix || !Number.isFinite(t?.gps?.latitude) || !Number.isFinite(t?.gps?.longitude)) {
+  if (!navLoc) {
     return `<section class="card map-panel">
       <div class="card-head">
         <div>
@@ -836,52 +937,39 @@ function map(){
     </section>`;
   }
 
-  const edgeState = t.system_state || 'NORMAL';
+  const edgeState = t?.system_state || 'NORMAL';
   const authoritativeState = isHardware ? edgeState : (d.state || edgeState || 'NORMAL');
   const isReroutingActive = authoritativeState === 'CRITICAL_FAILURE' || authoritativeState === 'REROUTING';
   const rerouteBadge = isReroutingActive ? badge('REROUTING ACTIVE', 'danger') : badge('REROUTING READY', 'success');
-
-  const nearest = mapState.nearestFacility;
-  const route = mapState.currentRoute;
-
-  let nearestHtml = '';
-  if (nearest) {
-    const isSelected = route?.destination?.id === nearest.id;
-    nearestHtml = `<div class="nearest-facility-box">
-      <strong>${esc(nearest.name)}</strong>
-      <p>${fmt(nearest.distance_km, 2)} km away · ${esc(nearest.source)}</p>
-      <button class="btn-route-action ${isSelected ? 'active' : ''}" id="btn-route-nearest" data-id="${esc(nearest.id)}">
-        ${isSelected ? 'Active destination' : 'Route to nearest'}
-      </button>
-    </div>`;
-  } else if (mapState.facilitiesLoading) {
-    nearestHtml = `<div class="nearest-facility-box"><p>Searching verified cooling facilities...</p></div>`;
-  } else {
-    nearestHtml = `<div class="nearest-facility-box"><p>${esc(mapState.facilitiesError || 'No verified nearby cooling facility found')}</p></div>`;
-  }
-
-  const facilityListHtml = mapState.facilities.slice(0, 5).map(f => {
-    const isSelected = route?.destination?.id === f.id;
-    return `<div class="facility-card-item ${isSelected ? 'selected' : ''}">
-      <div class="facility-info">
-        <span class="facility-title" title="${esc(f.name)}">${esc(f.name)}</span>
-        <div class="facility-meta">${fmt(f.distance_km, 2)} km · ${esc(f.source)}</div>
-      </div>
-      <button class="btn-route-action ${isSelected ? 'active' : ''} btn-list-route" data-id="${esc(f.id)}">
-        ${isSelected ? 'Routed' : 'Route'}
-      </button>
-    </div>`;
-  }).join('');
+  const locationBadge = navLoc.isFallback ? badge('DEMO FALLBACK LOCATION', 'warn') : badge(`GPS LIVE · ${navLoc.satellites} sats`, 'success');
+  const offlineBadge = (isHardware && !isFresh) ? badge('HARDWARE OFFLINE', 'danger') : '';
 
   return `<section class="card map-panel">
     <div class="card-head">
       <div>
         <h2>GPS & Emergency Rerouting</h2>
-        <p class="card-sub">Live OpenStreetMap navigation · Real GPS telemetry</p>
+        <p class="card-sub">Live OpenStreetMap navigation · OpenRouteService directions</p>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        ${offlineBadge}
         ${rerouteBadge}
-        ${badge(`GPS LIVE · ${t.gps.satellites || 0} sats`, 'success')}
+        ${locationBadge}
+      </div>
+    </div>
+    <div class="map-controls-bar">
+      <div class="map-controls-left">
+        <button type="button" id="btn-toggle-follow" class="map-btn ${mapState.followVehicle ? 'active' : ''}">
+          <span style="font-size:13px;">${mapState.followVehicle ? '⦿' : '○'}</span> Follow Vehicle
+        </button>
+        <button type="button" id="btn-refresh-storages" class="map-btn secondary" ${mapState.facilitiesLoading ? 'disabled' : ''}>
+          <span>↻</span> ${mapState.facilitiesLoading ? 'Searching Overpass...' : 'Refresh Cold Storages'}
+        </button>
+      </div>
+      <div class="map-radius-selector">
+        <span class="radius-label">Search Radius:</span>
+        <button type="button" class="btn-radius ${mapState.searchRadiusKm === 10 ? 'active' : ''}" data-radius="10">10 km</button>
+        <button type="button" class="btn-radius ${mapState.searchRadiusKm === 25 ? 'active' : ''}" data-radius="25">25 km</button>
+        <button type="button" class="btn-radius ${mapState.searchRadiusKm === 50 ? 'active' : ''}" data-radius="50">50 km</button>
       </div>
     </div>
     <div class="map-layout">
@@ -889,36 +977,7 @@ function map(){
         <div id="leaflet-map" class="leaflet-map-host"></div>
       </div>
       <div class="map-sidebar" id="map-sidebar-content">
-        <div class="map-stats-card">
-          <h3>Telemetry & Navigation</h3>
-          <div class="map-stat-row"><span>Device:</span><strong>${esc(device)}</strong></div>
-          <div class="map-stat-row"><span>GPS:</span><strong>FIX (${t.gps.satellites || 0} sats)</strong></div>
-          <div class="map-stat-row"><span>Coordinates:</span><strong>${fmt(t.gps.latitude, 4)}, ${fmt(t.gps.longitude, 4)}</strong></div>
-          <div class="map-stat-row"><span>Rerouting:</span><strong>${isReroutingActive ? 'ACTIVE' : (mapState.facilities.length ? 'READY' : 'UNAVAILABLE')}</strong></div>
-          ${route ? `
-            <div class="map-stat-row"><span>Destination:</span><strong>${esc(route.destination?.name || 'Cooling Facility')}</strong></div>
-            <div class="map-stat-row"><span>Distance:</span><strong>${fmt(route.distance_km, 1)} km</strong></div>
-            <div class="map-stat-row"><span>Est. drive:</span><strong>${fmt(route.duration_min, 0)} min</strong></div>
-          ` : ''}
-          ${mapState.routeError ? `<div class="map-stat-row" style="color:var(--danger,#b23b2b);font-size:10px;">${esc(mapState.routeError)}</div>` : ''}
-        </div>
-
-        <div class="map-stats-card">
-          <h3>Nearest Cooling Facility</h3>
-          ${nearestHtml}
-        </div>
-
-        ${mapState.facilities.length ? `
-          <div class="map-stats-card">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-              <h3 style="margin:0;">Discovered Facilities (${mapState.facilities.length})</h3>
-              ${route ? `<button id="btn-clear-route" class="secondary" style="padding:2px 6px;font-size:9px;">Clear route</button>` : ''}
-            </div>
-            <div class="facility-list">
-              ${facilityListHtml}
-            </div>
-          </div>
-        ` : ''}
+        <!-- Rendered dynamically by updateMapSidebar() -->
       </div>
     </div>
   </section>`;
@@ -931,9 +990,9 @@ function syncMap() {
   const d = latest?.telemetry?.decision || {};
   const isHardware = (t?.mode || appMode) === 'HARDWARE';
   const isFresh = !isHardware || isLiveHardwareFresh();
-  const hasGpsFix = !!(t?.gps?.fix && Number.isFinite(t?.gps?.latitude) && Number.isFinite(t?.gps?.longitude));
+  const navLoc = getActiveNavLocation();
 
-  if (!container || !isFresh || !hasGpsFix || !device) {
+  if (!container || !navLoc || !device || (isHardware && !isFresh && !navLoc.isFallback)) {
     if (mapState.instance) {
       try { mapState.instance.remove(); } catch(e) {}
       mapState.instance = null;
@@ -950,8 +1009,8 @@ function syncMap() {
     return;
   }
 
-  const lat = t.gps.latitude;
-  const lon = t.gps.longitude;
+  const lat = navLoc.latitude;
+  const lon = navLoc.longitude;
 
   if (!mapState.instance || mapState.containerEl !== container) {
     if (mapState.instance) {
@@ -964,7 +1023,7 @@ function syncMap() {
 
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors'
     }).addTo(mapState.instance);
 
     mapState.facilityLayer = L.layerGroup().addTo(mapState.instance);
@@ -978,39 +1037,64 @@ function syncMap() {
     }, 150);
   }
 
+  // Smooth vehicle marker movement
+  const isOnline = isFresh && (latest?.online !== false);
+  const statusStr = isOnline ? 'ONLINE' : 'HARDWARE OFFLINE';
   const vehicleIcon = L.divIcon({
     className: '',
-    html: '<div class="vehicle-marker-wrapper"><div class="vehicle-marker-pulse"></div><div class="vehicle-marker-dot"></div></div>',
-    iconSize: [26, 26],
-    iconAnchor: [13, 13]
+    html: `
+      <div class="vehicle-marker-wrapper" title="${esc(device)}">
+        <div class="vehicle-marker-pulse"></div>
+        <div class="vehicle-marker-truck">🚚</div>
+      </div>
+    `,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+    popupAnchor: [0, -18]
   });
 
-  const popupContent = `<strong>Cold-chain vehicle</strong><br>Device: ${esc(device)}<br>GPS: LIVE<br>Satellites: ${t.gps.satellites || 0}<br>Last update: ${clock(latest?.timestamp)}`;
+  const popupContent = `
+    <div style="min-width:180px;">
+      <strong style="color:#102e2c;font-size:12px;">Cold-chain vehicle</strong><br>
+      <span style="font-size:11px;">Device: <strong>${esc(device)}</strong></span><br>
+      <span style="font-size:11px;color:${isOnline ? '#0f8478' : '#b23b2b'};font-weight:600;">Status: ${esc(statusStr)}</span><br>
+      <span style="font-size:11px;color:#527362;">Location source: <strong>${esc(navLoc.sourceLabel)}</strong></span><br>
+      <span style="font-size:10px;color:#6e8576;">Last update: ${esc(clock(navLoc.timestamp))}</span>
+    </div>
+  `;
 
   if (!mapState.vehicleMarker) {
     mapState.vehicleMarker = L.marker([lat, lon], { icon: vehicleIcon, zIndexOffset: 1000 }).addTo(mapState.instance);
     mapState.vehicleMarker.bindPopup(popupContent);
+    mapState.vehicleMarker.bindTooltip(esc(device), { permanent: false, direction: 'top', offset: [0, -14] });
   } else {
     mapState.vehicleMarker.setLatLng([lat, lon]);
     mapState.vehicleMarker.setPopupContent(popupContent);
   }
 
-  const gpsKey = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+  // Follow vehicle if toggle is enabled
+  if (mapState.followVehicle && mapState.instance) {
+    mapState.instance.panTo([lat, lon], { animate: true, duration: 0.6 });
+  }
+
+  // Query nearby facilities when position meaningfully changes or cache expires
+  const gpsKey = `${lat.toFixed(3)},${lon.toFixed(3)}:r${mapState.searchRadiusKm}`;
   const now = Date.now();
   const timeSinceFetch = now - mapState.lastFetchTime;
   const isGpsMoved = mapState.lastGpsKey !== gpsKey;
   const isDeviceChanged = mapState.activeDeviceId !== device;
 
-  if (isDeviceChanged || isGpsMoved || (mapState.facilities.length === 0 && !mapState.facilitiesLoading && timeSinceFetch > 10000)) {
+  if (isDeviceChanged || isGpsMoved || (mapState.facilities.length === 0 && !mapState.facilitiesLoading && timeSinceFetch > 12000)) {
     mapState.activeDeviceId = device;
     mapState.lastGpsKey = gpsKey;
     mapState.lastFetchTime = now;
-    fetchNearbyFacilities(device);
+    fetchNearbyFacilities(device, mapState.searchRadiusKm);
   } else {
     renderFacilityMarkers();
   }
 
-  const edgeState = t.system_state || 'NORMAL';
+  // Self-healing escalation check: automatically route to nearest facility during cooling failure
+  const edgeState = t?.system_state || 'NORMAL';
   const authoritativeState = isHardware ? edgeState : (d.state || edgeState || 'NORMAL');
   const isCriticalReroute = authoritativeState === 'CRITICAL_FAILURE' || authoritativeState === 'REROUTING';
 
@@ -1021,9 +1105,52 @@ function syncMap() {
   }
 
   renderRouteLayer();
+  updateMapSidebar();
 }
 
 document.addEventListener('click', e => {
+  // Follow vehicle toggle
+  const followBtn = e.target.closest('#btn-toggle-follow');
+  if (followBtn) {
+    e.preventDefault();
+    mapState.followVehicle = !mapState.followVehicle;
+    followBtn.classList.toggle('active', mapState.followVehicle);
+    followBtn.innerHTML = `<span style="font-size:13px;">${mapState.followVehicle ? '⦿' : '○'}</span> Follow Vehicle`;
+    if (mapState.followVehicle) {
+      const navLoc = getActiveNavLocation();
+      if (navLoc && mapState.instance) {
+        mapState.instance.panTo([navLoc.latitude, navLoc.longitude], { animate: true });
+      }
+    }
+    return;
+  }
+
+  // Refresh cold storages button
+  const refreshBtn = e.target.closest('#btn-refresh-storages');
+  if (refreshBtn) {
+    e.preventDefault();
+    if (device) {
+      mapState.lastFetchTime = 0;
+      fetchNearbyFacilities(device, mapState.searchRadiusKm);
+    }
+    return;
+  }
+
+  // Radius pill buttons
+  const radiusBtn = e.target.closest('.btn-radius, .btn-radius-expand');
+  if (radiusBtn) {
+    e.preventDefault();
+    const r = parseFloat(radiusBtn.dataset.radius);
+    if (Number.isFinite(r) && device) {
+      mapState.searchRadiusKm = r;
+      document.querySelectorAll('.btn-radius').forEach(b => b.classList.toggle('active', parseFloat(b.dataset.radius) === r));
+      mapState.lastFetchTime = 0;
+      fetchNearbyFacilities(device, r);
+    }
+    return;
+  }
+
+  // Route here buttons
   const routeBtn = e.target.closest('.btn-route-action, .btn-popup-route, .btn-list-route, #btn-route-nearest');
   if (routeBtn) {
     e.preventDefault();
@@ -1033,6 +1160,8 @@ document.addEventListener('click', e => {
     }
     return;
   }
+
+  // Clear route button
   const clearBtn = e.target.closest('#btn-clear-route');
   if (clearBtn) {
     e.preventDefault();
