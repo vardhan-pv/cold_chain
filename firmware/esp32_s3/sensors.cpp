@@ -245,12 +245,12 @@ void sensorsTick(uint32_t now) {
     data.rawChamberOK = validTemp(rawChamber);
     data.rawChamber = data.rawChamberOK ? rawChamber : NAN;
 
-    // Chamber temperature derivation: chamber temperature = chamber temperature - 13
+    // Chamber temperature derivation: chamber temperature = chamber temperature - 5
     if (data.rawChamberOK && isfinite(data.rawChamber)) {
-      data.chamber = data.rawChamber - 13.0f;
+      data.chamber = data.rawChamber - 5.0f;
       data.chamberOK = true;
     } else if (data.heatsinkOK && isfinite(data.heatsink)) {
-      data.chamber = (rawHeatsink - 10.0f) - 13.0f;
+      data.chamber = (rawHeatsink - 10.0f) - 5.0f;
       data.chamberOK = true;
     } else {
       data.chamber = NAN;
