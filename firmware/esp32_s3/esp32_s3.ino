@@ -143,6 +143,10 @@ void loop(){
         autonomousEnabled = false;
         primaryCoolingOff();
         Serial.println("{\"event\":\"auto_cooling_disabled\"}");
+      } else if(command=="RESET WIFI" || command.equalsIgnoreCase("RESET WIFI") || command=="RESET_WIFI"){
+        wifiResetCredentials();
+      } else if(command=="WIFI STATUS" || command.equalsIgnoreCase("WIFI STATUS") || command=="WIFI_STATUS"){
+        wifiPrintStatus();
       } else if((command=="RESET CONFIRMED" || command=="RESET" || command=="CLEAR FAULT")&&
                 coolingConfigured()&&s.chamberOK&&s.heatsinkOK&&
                 (!CURRENT_CALIBRATED || (s.currentOK && s.current < .3))&&

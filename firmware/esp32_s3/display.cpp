@@ -1,6 +1,7 @@
 #include "display.h"
 #include "config.h"
 #include "cooling.h"
+#include "telemetry_net.h"
 #include <WiFi.h>
 #include <Adafruit_SSD1306.h>
 #include <LiquidCrystal_I2C.h>
@@ -215,10 +216,29 @@ void displayTick(const SensorData& data, const coldchain::Output& output, bool b
     }
     lastManualCoolingOn = data.manualCoolingOn;
 
+    WifiState ws = networkWifiState();
     bool showThankYou = (now - thankYouMs <= 2500 && thankYouMs > 0);
     bool showWarning = (data.chamber > HIGH_TEMP_WARNING && !data.manualCoolingOn);
 
-    if (showThankYou) {
+    if (ws == WifiState::CONNECTING) {
+      lcd->setCursor(0, 0);
+      lcd->print("      WIFI      ");
+      lcd->setCursor(0, 1);
+      lcd->print(" CONNECTING...  ");
+      lastLcdPageChange = now;
+    } else if (ws == WifiState::SETUP_AP) {
+      lcd->setCursor(0, 0);
+      lcd->print("   WIFI SETUP   ");
+      lcd->setCursor(0, 1);
+      lcd->print("ColdChain-Setup ");
+      lastLcdPageChange = now;
+    } else if (ws == WifiState::CONNECTED_POPUP) {
+      lcd->setCursor(0, 0);
+      lcd->print(" WIFI CONNECTED ");
+      lcd->setCursor(0, 1);
+      lcd->print(" SYSTEM ONLINE  ");
+      lastLcdPageChange = now;
+    } else if (showThankYou) {
       lcd->setCursor(0, 0);
       lcd->print("   THANK YOU    ");
       lcd->setCursor(0, 1);
